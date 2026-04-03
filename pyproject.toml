@@ -1,0 +1,13 @@
+[project]
+name = "nanoflow"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.10"
+dependencies = [
+    "matplotlib>=3.10.8",
+    "numpy>=2.2.6",
+    "scikit-learn>=1.7.2",
+    "torch>=2.11.0",
+    "torchvision>=0.26.0",
+    "tqdm>=4.67.3",
+]
