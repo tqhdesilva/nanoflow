@@ -12,3 +12,4 @@ build/
 .DS_Store
 .python-version
 wandb/
+data/**
