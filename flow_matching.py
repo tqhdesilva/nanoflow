@@ -100,7 +100,7 @@ def interpolate(x_0, eps, t):
     At t=0: x_t = eps (pure noise)
     At t=1: x_t = x_0 (clean data)
     """
-    raise NotImplementedError("TODO: implement linear interpolation (1-t)*eps + t*x_0")
+    return (1 - t) * eps + t * x_0
 
 
 def target_velocity(x_0, eps):
@@ -112,7 +112,7 @@ def target_velocity(x_0, eps):
 
     Returns: v (B, 2) — the velocity that moves eps toward x_0
     """
-    raise NotImplementedError("TODO: implement target velocity x_0 - eps")
+    return x_0 - eps
 
 
 # ---------------------------------------------------------------------------
@@ -145,15 +145,15 @@ def train(model, dataset, num_epochs=300, batch_size=256, lr=1e-3, device="cpu")
             x_0 = dataset[perm[i:i + batch_size]]
 
             # TODO: implement the training step
-            # 1. Sample eps ~ N(0, I) matching x_0 shape
-            # 2. Sample t ~ U(0, 1), shape (B, 1) for broadcasting
-            # 3. Compute x_t via interpolate()
-            # 4. Forward pass: v_pred = model(x_t, t.squeeze(-1))
-            #    (squeeze t back to (B,) for the model's time embedding)
-            # 5. Compute MSE loss against target_velocity()
-            # 6. optimizer.zero_grad(), loss.backward(), optimizer.step()
-            raise NotImplementedError("TODO: implement training step")
-
+            eps = torch.randn_like(x_0, device=device)
+            t = torch.rand(x_0.size(0), 1, device=device)
+            xt = interpolate(x_0, eps, t)
+            v_pred = model(xt, t.squeeze(-1))
+            vt = target_velocity(x_0, eps)
+            loss = nn.functional.mse_loss(v_pred, vt)
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
             epoch_loss += loss.item()
             n_batches += 1
 
@@ -181,7 +181,13 @@ def sample(model, n_samples=1000, num_steps=100, device="cpu"):
 
     Returns: (n_samples, 2) tensor of generated points.
     """
-    raise NotImplementedError("TODO: implement Euler ODE sampler")
+    xt = torch.randn(n_samples, 2, device=device)  # N(0, I)
+    dt = 1.0 / num_steps
+    for t in torch.linspace(0, 1, num_steps, device=device):
+        t_ = t.expand(n_samples)
+        vt = model(xt, t_)
+        xt = xt + vt * dt
+    return xt
 
 
 # ---------------------------------------------------------------------------
