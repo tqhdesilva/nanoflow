@@ -170,6 +170,7 @@ def interpolate(x_0, eps, t):
     At t=0: x_t = eps (pure noise)
     At t=1: x_t = x_0 (clean data)
     """
+    # CondOT path
     return (1 - t) * eps + t * x_0
 
 

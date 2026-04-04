@@ -3,6 +3,10 @@ __pycache__/
 *.pth
 *.pt
 *.png
+!moon_samples.png
+!moon_loss.png
+!fashionmnist_samples.png
+!fashionmnist_loss.png
 *.jpg
 .venv/
 venv/

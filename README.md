@@ -12,22 +12,26 @@ python flow_matching.py --dataset moons --save
 python flow_matching.py --dataset fashion --device mps --save
 ```
 
-## DDPM → Flow Matching cheat sheet
+## Results
 
-| DDPM | Flow Matching |
-|------|---------------|
-| `x_t = sqrt(a_t)*x_0 + sqrt(1-a_t)*eps` | `x_t = (1-t)*eps + t*x_0` |
-| Predict noise `eps` | Predict velocity `v = x_0 - eps` |
-| `t` ∈ {0,...,T-1} integers | `t` ∈ [0,1] continuous |
-| Reverse chain with variance | Euler ODE: `x += v*dt` |
-| Beta schedule, alpha cumprod | Nothing — just lerp |
+### 2D Moons (MLP, 300 epochs)
+
+| Samples | Loss |
+|---------|------|
+| ![moons samples](moon_samples.png) | ![moons loss](moon_loss.png) |
+
+### FashionMNIST (UNet, 20 epochs)
+
+| Samples | Loss |
+|---------|------|
+| ![fashion samples](fashionmnist_samples.png) | ![fashion loss](fashionmnist_loss.png) |
 
 ## Datasets & models
 
-| Dataset | Model | Params | Default epochs | Notes |
-|---------|-------|--------|----------------|-------|
-| `moons` | MLP (4 residual blocks) | ~50K | 300 | 2D toy data from sklearn |
-| `fashion` | UNet (2 levels, 28→14→7) | ~321K | 20 | FashionMNIST, pixel space |
+| Dataset | Model | Params | Default epochs | Training time |
+|---------|-------|--------|----------------|-----------------------------|
+| `moons` | MLP (4 residual blocks) | ~50K | 300 | ~10s (M4 CPU) |
+| `fashion` | UNet (2 levels, 28→14→7) | ~321K | 20 | <10 min (MPS, M4 Pro) |
 
 Both share the same flow matching core — linear interpolation path, MSE velocity loss, Euler ODE sampling.
 
