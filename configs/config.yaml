@@ -1,0 +1,17 @@
+defaults:
+  - dataset: moons       # configs/dataset/moons.yaml
+  - model: mlp           # configs/model/mlp.yaml
+  - training: default    # configs/training/default.yaml
+  - _self_               # this file's keys override sub-configs last
+
+device: cpu
+save: false
+num_steps: 100
+loss_plot: "${dataset.name}_loss.png"
+samples_plot: "${dataset.name}_samples.png"
+
+hydra:
+  job:
+    chdir: false          # keep cwd at project root (required for torchrun multi-rank)
+  run:
+    dir: outputs/${now:%Y-%m-%d_%H-%M-%S}

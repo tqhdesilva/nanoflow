@@ -1,0 +1,6 @@
+_target_: models.UNet
+in_ch: 1
+base_ch: 32
+depth: 2
+time_dim: 64
+use_attn: false

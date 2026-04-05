@@ -1,0 +1,4 @@
+_target_: models.MLP
+hidden_dim: 128
+num_layers: 4
+time_dim: 32

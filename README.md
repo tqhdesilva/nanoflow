@@ -6,10 +6,11 @@ Minimal from-scratch flow matching, in the spirit of nanoGPT. Pure PyTorch, sing
 
 ```bash
 # 2D moons (fast, good for debugging)
-python flow_matching.py --dataset moons --save
+uv run python train.py dataset=moons model=mlp training.epochs=300 save=true num_steps=1000
+
 
 # FashionMNIST (28x28 grayscale)
-python flow_matching.py --dataset fashion --device mps --save
+uv run python train.py dataset=fashion model=unet_fashion training.epochs=20 save=true num_steps=200 device=mps
 ```
 
 ## Results
@@ -18,13 +19,13 @@ python flow_matching.py --dataset fashion --device mps --save
 
 | Samples | Loss |
 |---------|------|
-| ![moons samples](moon_samples.png) | ![moons loss](moon_loss.png) |
+| ![moons samples](moons_samples.png) | ![moons loss](moons_loss.png) |
 
 ### FashionMNIST (UNet, 20 epochs)
 
 | Samples | Loss |
 |---------|------|
-| ![fashion samples](fashionmnist_samples.png) | ![fashion loss](fashionmnist_loss.png) |
+| ![fashion samples](fashion_samples.png) | ![fashion loss](fashion_loss.png) |
 
 ## Datasets & models
 
