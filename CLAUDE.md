@@ -44,6 +44,14 @@ configs/
 - UNet attention is optional (`use_attn`); recommended for ≥ 32×32 images.
 - Use `uv run python` to run (not bare `python`).
 
+## CIFAR-10 training notes
+
+Tested config: `batch_size=256`, `lr=1e-3`, 100 epochs, `unet_cifar` (5.8M params, base_ch=64, depth=3, use_attn=true). Trains in ~17 min on a single 4080 GPU (~11s/epoch). Produces recognizable but blurry 32×32 samples at 100 Euler steps.
+
+```bash
+uv run python train.py dataset=cifar10 model=unet_cifar device=cuda training.batch_size=256 save=true
+```
+
 ## Checkpointing
 
 Checkpoints saved every `training.save_every` epochs to `checkpoints/{run_name}_latest.pt`.

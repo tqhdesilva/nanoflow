@@ -7,6 +7,8 @@ __pycache__/
 !moons_loss.png
 !fashion_samples.png
 !fashion_loss.png
+!cifar10_samples.png
+!cifar10_loss.png
 checkpoints/
 outputs/
 *.jpg
