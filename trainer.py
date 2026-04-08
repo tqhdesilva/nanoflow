@@ -56,6 +56,11 @@ def train(model, dataset, cfg, device):
         epochs, batch_size, lr, save_every, checkpoint_dir, resume, run_name
     """
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
+    warmup_epochs = getattr(cfg, "warmup_epochs", 0)
+    scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [
+        torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1e-3, total_iters=warmup_epochs),
+        torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.epochs - warmup_epochs),
+    ], milestones=[warmup_epochs]) if warmup_epochs > 0 else None
     start_epoch = 0
     losses = []
 
@@ -96,6 +101,8 @@ def train(model, dataset, cfg, device):
             n_batches += 1
 
         losses.append(epoch_loss / n_batches)
+        if scheduler is not None:
+            scheduler.step()
 
         if (epoch + 1) % cfg.save_every == 0:
             save_checkpoint(
