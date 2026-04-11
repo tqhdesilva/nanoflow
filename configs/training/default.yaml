@@ -1,3 +1,6 @@
+defaults:
+  - default_schema
+
 epochs: 100
 batch_size: 128
 lr: 1.0e-3
@@ -5,7 +8,7 @@ warmup_epochs: 0
 save_every: 10
 checkpoint_dir: checkpoints
 resume: null
-run_name: run
+run_name: ${dataset.name}_${now:%Y%m%d_%H%M%S}
 
 # --- Logging & instrumentation ---
 log_dir: runs/${training.run_name}
@@ -14,9 +17,6 @@ grad_clip: 1.0
 
 # --- EMA (0 = disabled; use 0.9999 for long runs) ---
 ema_decay: 0
-
-# --- DataLoader ---
-num_workers: 4
 
 # --- Precision (fp32, fp16, bf16) — passed to AutoUnit ---
 precision: null

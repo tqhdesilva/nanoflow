@@ -1,0 +1,8 @@
+# @package _global_
+defaults:
+  - /dataset: fashion
+  - /model: unet_fashion
+  - /inference: fashion
+
+training:
+  num_workers: 4

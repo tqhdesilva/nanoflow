@@ -1,68 +1,84 @@
 # NanoFlow
 
-Minimal from-scratch flow matching, in the spirit of nanoGPT. Pure PyTorch, single-file.
+Minimal from-scratch flow matching, in the spirit of nanoGPT. Pure PyTorch.
 
 ## Quickstart
 
 ```bash
-# 2D moons (fast, good for debugging)
-uv run python train.py dataset=moons model=mlp training.epochs=300 save=true num_steps=1000
+# 2D moons (default — fast, good for debugging)
+uv run python train.py device=mps
 
+# FashionMNIST
+uv run python train.py experiment=fashion device=mps
 
-# FashionMNIST (28x28 grayscale)
-uv run python train.py dataset=fashion model=unet_fashion training.epochs=20 save=true num_steps=200 device=mps
+# CIFAR-10
+uv run python train.py experiment=cifar10 device=cuda
 ```
 
-## Results
+Each experiment bundles the right dataset, model, and inference config. Override anything via CLI:
 
-### 2D Moons (MLP, 300 epochs)
-
-| Samples | Loss |
-|---------|------|
-| ![moons samples](moons_samples.png) | ![moons loss](moons_loss.png) |
-
-### FashionMNIST (UNet, 20 epochs)
-
-| Samples | Loss |
-|---------|------|
-| ![fashion samples](fashion_samples.png) | ![fashion loss](fashion_loss.png) |
-
-## Datasets & models
-
-| Dataset | Model | Params | Default epochs | Training time |
-|---------|-------|--------|----------------|-----------------------------|
-| `moons` | MLP (4 residual blocks) | ~50K | 300 | ~10s (M4 CPU) |
-| `fashion` | UNet (2 levels, 28→14→7) | ~321K | 20 | <10 min (MPS, M4 Pro) |
-
-Both share the same flow matching core — linear interpolation path, MSE velocity loss, Euler ODE sampling.
-
-## CLI flags
-
-```
---dataset   {moons,fashion}  default: moons
---epochs    int               default: 300 (moons) / 20 (fashion)
---batch_size int              default: 256 (moons) / 128 (fashion)
---lr        float             default: 1e-3
---num_steps int               Euler integration steps (default: 100)
---n_samples int               default: 1000 (moons) / 64 (fashion)
---device    str               default: cpu
---save                        save plots to PNG instead of showing
+```bash
+uv run python train.py experiment=cifar10 device=cuda training.epochs=200 training.batch_size=256 save=true
 ```
 
-## DDPM → Flow Matching cheat sheet
+## Experiments
+
+| Experiment | Dataset | Model | Params | Notes |
+|------------|---------|-------|--------|-------|
+| `moons` (default) | 2D moons | MLP | ~71K | ~10s on MPS |
+| `fashion` | FashionMNIST 28x28 | UNet (depth=2) | ~347K | ~10 min on MPS |
+| `cifar10` | CIFAR-10 32x32 | UNet (depth=3, attn) | ~5.8M | ~17 min on RTX 4080 (16GB) |
+
+## Config system
+
+Configs use [Hydra](https://hydra.cc/) with structured config validation. The experiment config is the main knob — it sets dataset, model, and inference defaults together.
+
+```
+configs/
+  config.yaml                          # top-level (device, save)
+  experiment/{moons,fashion,cifar10}   # bundles dataset + model + inference
+  training/default.yaml                # epochs, lr, batch_size, etc.
+```
+
+Key top-level overrides:
+- `device={cpu,mps,cuda}` — default: cpu
+- `save={true,false}` — save sample plots (default: false)
+- `training.epochs=N`, `training.lr=X`, `training.batch_size=N`
+- `inference.num_steps=N` — Euler integration steps (default: 100)
+
+## TensorBoard
+
+```bash
+uv run tensorboard --logdir runs/
+```
+
+Each run logs to `runs/{experiment}_{timestamp}/`.
+
+## Checkpointing
+
+Checkpoints save every `training.save_every` epochs. Resume with:
+
+```bash
+uv run python train.py training.resume=checkpoints/{run_name}_latest.pt
+```
+
+SIGTERM (e.g. RunPod preemption) triggers a checkpoint save before exit.
+
+## Flow matching in brief
+
+| Concept | Detail |
+|---------|--------|
+| Interpolation | `x_t = (1-t)*noise + t*data` |
+| Target | Predict velocity `v = data - noise` |
+| Time | `t ∈ [0,1]`, continuous (t=0 is noise, t=1 is data) |
+| Sampling | Deterministic Euler ODE: `x += v*dt` |
+| Loss | MSE on predicted vs target velocity |
+
+## DDPM vs Flow Matching
 
 | DDPM | Flow Matching |
 |------|---------------|
 | `x_t = sqrt(a_t)*x_0 + sqrt(1-a_t)*eps` | `x_t = (1-t)*eps + t*x_0` |
 | Predict noise `eps` | Predict velocity `v = x_0 - eps` |
-| `t` ∈ {0,...,T-1} integers | `t` ∈ [0,1] continuous |
-| Reverse chain with variance | Euler ODE: `x += v*dt` |
-| Beta schedule, alpha cumprod | Nothing — just lerp |
-
-## Pitfalls
-
-- **Time direction:** t=0 is noise, t=1 is data (opposite from DDPM)
-- **Continuous time:** scale t by 1000 before sinusoidal embedding for better frequency coverage
-- **Broadcasting:** t shape must match data dims — `(B,1)` for 2D, `(B,1,1,1)` for images
-- **Sampling is deterministic:** Euler ODE has no stochastic term (unlike DDPM reverse steps)
-- **Don't clamp during integration:** intermediate x_t can exceed [-1,1]; only clamp at visualization
+| Integer timesteps, beta schedule | Continuous `t ∈ [0,1]`, no schedule |
+| Stochastic reverse chain | Deterministic Euler ODE |

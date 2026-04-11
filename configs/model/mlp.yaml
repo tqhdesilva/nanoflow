@@ -1,3 +1,6 @@
+defaults:
+  - mlp_schema
+
 _target_: models.MLP
 hidden_dim: 128
 num_layers: 4

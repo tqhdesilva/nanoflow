@@ -12,7 +12,6 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-from omegaconf import DictConfig
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
@@ -20,6 +19,7 @@ from torchtnt.framework import AutoUnit, State
 from torchtnt.framework.auto_unit import TrainStepResults
 from torchvision.utils import make_grid
 
+from config import NanoFlowConfig
 from datasets import moons_dataset, fashion_dataset, cifar_dataset
 from flow import NoisePath
 
@@ -87,15 +87,15 @@ def sample(model, path: NoisePath, n_samples=1000, num_steps=100, device="cpu", 
 # Dataset / DataLoader helpers
 # ---------------------------------------------------------------------------
 
-def _build_dataset(cfg: DictConfig, train=True):
-    name = cfg.dataset.name
-    if name == "moons":
-        return moons_dataset(n=cfg.dataset.n, noise=cfg.dataset.noise, train=train)
-    elif name == "fashion":
-        return fashion_dataset(root=cfg.dataset.root, train=train)
-    elif name == "cifar10":
-        return cifar_dataset(root=cfg.dataset.root, train=train)
-    raise ValueError(f"Unknown dataset: {name}")
+def _build_dataset(cfg: NanoFlowConfig, train=True):
+    ds = cfg.dataset
+    if ds.name == "moons":
+        return moons_dataset(n=ds.n, noise=ds.noise, train=train)  # type: ignore[arg-type]
+    elif ds.name == "fashion":
+        return fashion_dataset(root=ds.root, train=train)  # type: ignore[arg-type]
+    elif ds.name == "cifar10":
+        return cifar_dataset(root=ds.root, train=train)  # type: ignore[arg-type]
+    raise ValueError(f"Unknown dataset: {ds.name}")
 
 
 def _build_dataloader(dataset, batch_size, num_workers, rank, world_size, shuffle=True):
@@ -121,7 +121,7 @@ def _build_dataloader(dataset, batch_size, num_workers, rank, world_size, shuffl
 class FlowMatchingUnit(AutoUnit):
     """Self-contained training unit. Builds its own model, path, loaders, and writer."""
 
-    def __init__(self, cfg: DictConfig):
+    def __init__(self, cfg: NanoFlowConfig):
         # Distributed setup
         self.rank, self.world_size = self._setup_distributed()
         if self.world_size > 1:
@@ -153,7 +153,7 @@ class FlowMatchingUnit(AutoUnit):
         self.tcfg = tcfg
 
         # Image shape
-        self.image_shape = tuple(cfg.dataset.image_shape) if cfg.dataset.image_shape else None
+        self.image_shape = tuple(cfg.inference.image_shape) if cfg.inference.image_shape else None
 
         # DataLoaders
         self.train_ds = _build_dataset(cfg, train=True)

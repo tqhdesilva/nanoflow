@@ -1,3 +1,6 @@
+defaults:
+  - unet_fashion_schema
+
 _target_: models.UNet
 in_ch: 1
 base_ch: 32

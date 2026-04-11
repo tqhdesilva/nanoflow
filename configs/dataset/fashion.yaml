@@ -1,4 +1,5 @@
+defaults:
+  - fashion_schema
+
 name: fashion
 root: ./data
-n_samples: 64
-image_shape: [1, 28, 28]

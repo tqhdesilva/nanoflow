@@ -1,3 +1,6 @@
+defaults:
+  - unet_cifar_schema
+
 _target_: models.UNet
 in_ch: 3
 base_ch: 128

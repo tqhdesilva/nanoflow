@@ -9,6 +9,10 @@ from torch.utils.data import Dataset, TensorDataset
 from sklearn.datasets import make_moons
 
 
+def _scale_to_minus1_1(x):
+    return x * 2 - 1
+
+
 def moons_dataset(n=8000, noise=0.05, train=True):
     """2D moons dataset, normalized to roughly [-1, 1]."""
     X, _ = make_moons(n_samples=n, noise=noise)
@@ -23,7 +27,7 @@ def fashion_dataset(root="./data", train=True):
     from torchvision import datasets, transforms
     transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Lambda(lambda x: x * 2 - 1),
+        transforms.Lambda(_scale_to_minus1_1),
     ])
     return datasets.FashionMNIST(root=root, train=train, download=True, transform=transform)
 
@@ -33,6 +37,6 @@ def cifar_dataset(root="./data", train=True):
     from torchvision import datasets, transforms
     transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Lambda(lambda x: x * 2 - 1),
+        transforms.Lambda(_scale_to_minus1_1),
     ])
     return datasets.CIFAR10(root=root, train=train, download=True, transform=transform)

@@ -14,3 +14,8 @@ dependencies = [
     "torchvision>=0.26.0",
     "tqdm>=4.67.3",
 ]
+
+[dependency-groups]
+dev = [
+    "tensorboard>=2.20.0",
+]

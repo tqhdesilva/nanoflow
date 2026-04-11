@@ -1,0 +1,8 @@
+# @package _global_
+defaults:
+  - /dataset: cifar10
+  - /model: unet_cifar
+  - /inference: cifar10
+
+training:
+  num_workers: 4

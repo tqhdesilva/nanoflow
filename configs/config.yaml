@@ -1,15 +1,12 @@
 defaults:
-  - dataset: moons       # configs/dataset/moons.yaml
-  - model: mlp           # configs/model/mlp.yaml
-  - training: default    # configs/training/default.yaml
-  - flow: condot         # configs/flow/condot.yaml
-  - _self_               # this file's keys override sub-configs last
+  - config_schema
+  - training: default
+  - flow: condot
+  - experiment: moons
+  - _self_
 
 device: cpu
 save: false
-num_steps: 100
-loss_plot: "${dataset.name}_loss.png"
-samples_plot: "${dataset.name}_samples.png"
 
 hydra:
   job:
