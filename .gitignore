@@ -21,3 +21,5 @@ build/
 .python-version
 wandb/
 data/**
+runs/**
+
