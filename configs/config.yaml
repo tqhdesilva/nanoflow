@@ -2,6 +2,7 @@ defaults:
   - dataset: moons       # configs/dataset/moons.yaml
   - model: mlp           # configs/model/mlp.yaml
   - training: default    # configs/training/default.yaml
+  - flow: condot         # configs/flow/condot.yaml
   - _self_               # this file's keys override sub-configs last
 
 device: cpu

@@ -1,30 +1,38 @@
-"""Dataset loaders — moons, FashionMNIST, CIFAR-10."""
+"""Dataset loaders — moons, FashionMNIST, CIFAR-10.
+
+Each function returns a torch.utils.data.Dataset (not a raw tensor).
+"""
 
 import torch
+from torch.utils.data import Dataset, TensorDataset
+
 from sklearn.datasets import make_moons
 
 
-def moons_dataset(n=8000, noise=0.05):
+def moons_dataset(n=8000, noise=0.05, train=True):
     """2D moons dataset, normalized to roughly [-1, 1]."""
     X, _ = make_moons(n_samples=n, noise=noise)
     X = (X - X.mean(axis=0)) / X.std(axis=0)
-    return torch.tensor(X, dtype=torch.float32)
+    X = torch.tensor(X, dtype=torch.float32)
+    split = int(0.8 * len(X))
+    return TensorDataset(X[:split]) if train else TensorDataset(X[split:])
 
 
-def fashion_dataset(root="./data"):
-    """FashionMNIST, scaled to [-1, 1]. Returns (60000, 1, 28, 28) tensor."""
+def fashion_dataset(root="./data", train=True):
+    """FashionMNIST, scaled to [-1, 1]."""
     from torchvision import datasets, transforms
-    ds = datasets.FashionMNIST(
-        root=root, train=True, download=True,
-        transform=transforms.ToTensor(),
-    )
-    X = torch.stack([img for img, _ in ds])  # (60000, 1, 28, 28) in [0, 1]
-    return X * 2 - 1
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Lambda(lambda x: x * 2 - 1),
+    ])
+    return datasets.FashionMNIST(root=root, train=train, download=True, transform=transform)
 
 
-def cifar_dataset(root="./data"):
-    """CIFAR-10, scaled to [-1, 1]. Returns (50000, 3, 32, 32) tensor."""
-    import torchvision
-    ds = torchvision.datasets.CIFAR10(root=root, train=True, download=True)
-    X = torch.from_numpy(ds.data).permute(0, 3, 1, 2).float() / 255.0  # (50000, 3, 32, 32)
-    return X * 2 - 1
+def cifar_dataset(root="./data", train=True):
+    """CIFAR-10, scaled to [-1, 1]."""
+    from torchvision import datasets, transforms
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Lambda(lambda x: x * 2 - 1),
+    ])
+    return datasets.CIFAR10(root=root, train=train, download=True, transform=transform)
