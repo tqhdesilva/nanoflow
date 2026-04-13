@@ -44,6 +44,12 @@ configs/
 
 ## Config system
 
+Before any run, sanity-check the fully materialized config with:
+```bash
+uv run python train.py experiment=cifar10 device=cuda --cfg job
+```
+Replace the experiment/overrides to match your intended command. Hydra resolves all interpolations and prints the final values.
+
 Hydra experiment configs are the primary interface. `experiment=X` sets dataset, model, and inference together:
 
 | Experiment | Dataset | Model | n_samples | num_workers |

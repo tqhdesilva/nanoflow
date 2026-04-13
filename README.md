@@ -33,6 +33,11 @@ uv run python train.py experiment=cifar10 device=cuda training.epochs=200 traini
 
 Configs use [Hydra](https://hydra.cc/) with structured config validation. The experiment config is the main knob — it sets dataset, model, and inference defaults together.
 
+Sanity-check the fully materialized config before a run:
+```bash
+uv run python train.py experiment=cifar10 device=cuda --cfg job
+```
+
 ```
 configs/
   config.yaml                          # top-level (device, save)

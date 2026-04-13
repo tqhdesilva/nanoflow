@@ -6,3 +6,10 @@ defaults:
 
 training:
   num_workers: 4
+  batch_size: 256
+  epochs: 500
+
+
+inference:
+  num_steps: 200
+
