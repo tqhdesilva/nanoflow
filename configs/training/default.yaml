@@ -6,12 +6,10 @@ batch_size: 128
 lr: 1.0e-3
 warmup_epochs: 0
 save_every: 10
-checkpoint_dir: checkpoints
 resume: null
-run_name: ${dataset.name}_${now:%Y%m%d_%H%M%S}
+run_prefix: ${dataset.name}
 
 # --- Logging & instrumentation ---
-log_dir: runs/${training.run_name}
 log_every: 50
 grad_clip: 1.0
 

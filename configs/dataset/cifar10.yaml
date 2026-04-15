@@ -1,5 +1,6 @@
 defaults:
   - cifar10_schema
 
+_target_: datasets.CifarDataset
 name: cifar10
 root: ./data

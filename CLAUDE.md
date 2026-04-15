@@ -14,7 +14,7 @@ uv run python train.py experiment=cifar10 device=cuda      # CIFAR-10
 Override any config field via CLI:
 ```bash
 uv run python train.py experiment=cifar10 device=cuda training.epochs=200 training.batch_size=256 save=true
-uv run python train.py training.resume=checkpoints/moons_20260411_153000_latest.pt
+uv run python train.py training.resume=runs/moons_20260413_120000/checkpoints/latest.pt
 ```
 
 Multi-GPU:
@@ -25,10 +25,11 @@ torchrun --nproc_per_node=N train.py experiment=cifar10 device=cuda
 ## Structure
 
 ```
-train.py          # Hydra entry point, post-training sampling
+train.py          # Hydra entry point — training only
+inference.py      # Standalone inference — load from run_dir or experiment+checkpoint
 config.py         # Structured config dataclasses (schema validation)
-unit.py           # FlowMatchingUnit(AutoUnit) — training loop, DDP, TensorBoard, EMA
-datasets.py       # moons_dataset(), fashion_dataset(), cifar_dataset()
+unit.py           # FlowMatchingUnit(AutoUnit), SamplingUnit(AutoPredictUnit), euler_sample
+datasets.py       # MoonsDataset, FashionMNISTDataset, CifarDataset (classes with num_classes)
 models.py         # SinusoidalEmbedding, MLP, ResBlock, UNet
 flow.py           # NoisePath base, CondOT
 viz.py            # plot_samples(), plot_image_samples()
@@ -68,11 +69,31 @@ Structured config dataclasses in `config.py` validate all YAML configs at startu
 - UNet uses GroupNorm (not BatchNorm).
 - Use `uv run python` to run (not bare `python`).
 
-## Checkpointing
+## Run layout
 
-Checkpoints saved every `training.save_every` epochs to `checkpoints/{run_name}_latest.pt`.
-SIGTERM saves `{run_name}_preempted.pt` before exit.
-Resume: `training.resume=checkpoints/{run_name}_latest.pt`.
+All run artifacts live under `runs_dir` (default: `runs`). Each run gets `{run_prefix}_{timestamp}/`:
+```
+runs/{prefix}_{timestamp}/
+  checkpoints/          # latest.pt, preempted.pt
+  tensorboard/          # TensorBoard event files
+  metadata.yaml         # resolved config + git info (commit, branch, dirty, diff)
+```
+
+Checkpoints saved every `training.save_every` epochs. SIGTERM saves `preempted.pt`.
+Resume: `training.resume=runs/.../checkpoints/latest.pt`.
+
+## Inference
+
+```bash
+# From run dir (auto-finds checkpoint + config):
+uv run python inference.py run_dir=runs/moons_20260413_120000 save=true
+
+# Manual (experiment + checkpoint):
+uv run python inference.py experiment=moons inference.checkpoint=runs/.../checkpoints/latest.pt save=true
+
+# No checkpoint (random weights, warns):
+uv run python inference.py experiment=moons save=true
+```
 
 ## TensorBoard
 
@@ -80,5 +101,4 @@ Resume: `training.resume=checkpoints/{run_name}_latest.pt`.
 uv run tensorboard --logdir runs/
 ```
 
-Run dirs are auto-named `{experiment}_{timestamp}` (e.g. `runs/moons_20260411_153000/`).
 Logs: train/loss, train/lr, train/grad_norm, val/loss, timing/*, samples/generated.

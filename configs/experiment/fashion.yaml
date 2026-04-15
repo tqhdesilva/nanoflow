@@ -1,8 +1,21 @@
 # @package _global_
 defaults:
-  - /dataset: fashion
-  - /model: unet_fashion
-  - /inference: fashion
+  - override /dataset: fashion
+  - override /model: unet_fashion
 
 training:
+  epochs: 20
   num_workers: 4
+
+train_unit:
+  logger:
+    n_samples: 64
+    num_steps: 200
+    latent_shape: [1, 28, 28]
+
+inference:
+  n_samples: 64
+  save_path: fashion_samples.png
+  infer_unit:
+    num_steps: 200
+    latent_shape: [1, 28, 28]

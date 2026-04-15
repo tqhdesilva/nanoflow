@@ -1,15 +1,31 @@
 defaults:
-  - config_schema
-  - training: default
+  - dataset: moons
+  - model: mlp
   - flow: condot
+  - training: default
   - experiment: moons
   - _self_
 
 device: cpu
-save: false
+
+train_unit:
+  _target_: unit.FlowMatchingUnit
+  dataset: ${dataset}
+  model: ${model}
+  flow: ${flow}
+  training: ${training}
+  device: ${device}
+  runs_dir: runs
+
+inference:
+  infer_unit:
+    _target_: unit.InferenceUnit
+    model: ${model}
+    device: ${device}
+    checkpoint: null
 
 hydra:
   job:
-    chdir: false          # keep cwd at project root (required for torchrun multi-rank)
+    chdir: false
   run:
     dir: outputs/${now:%Y-%m-%d_%H-%M-%S}

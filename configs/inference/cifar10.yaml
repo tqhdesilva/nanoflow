@@ -1,7 +1,0 @@
-defaults:
-  - cifar10_schema
-
-n_samples: 64
-num_steps: 100
-image_shape: [3, 32, 32]
-samples_plot: cifar10_samples.png

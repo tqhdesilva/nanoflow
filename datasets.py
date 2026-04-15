@@ -1,10 +1,10 @@
-"""Dataset loaders — moons, FashionMNIST, CIFAR-10.
+"""Dataset classes — moons, FashionMNIST, CIFAR-10.
 
-Each function returns a torch.utils.data.Dataset (not a raw tensor).
+Each dataset returns (data, label) tuples and exposes a `num_classes` attribute.
 """
 
 import torch
-from torch.utils.data import Dataset, TensorDataset
+from torch.utils.data import Dataset
 
 from sklearn.datasets import make_moons
 
@@ -13,30 +13,68 @@ def _scale_to_minus1_1(x):
     return x * 2 - 1
 
 
-def moons_dataset(n=8000, noise=0.05, train=True):
-    """2D moons dataset, normalized to roughly [-1, 1]."""
-    X, _ = make_moons(n_samples=n, noise=noise)
-    X = (X - X.mean(axis=0)) / X.std(axis=0)
-    X = torch.tensor(X, dtype=torch.float32)
-    split = int(0.8 * len(X))
-    return TensorDataset(X[:split]) if train else TensorDataset(X[split:])
+class MoonsDataset(Dataset):
+    num_classes = 2
+
+    def __init__(self, n=8000, noise=0.05, train=True, **kwargs):
+        X, y = make_moons(n_samples=n, noise=noise)
+        X = (X - X.mean(axis=0)) / X.std(axis=0)
+        X = torch.tensor(X, dtype=torch.float32)
+        y = torch.tensor(y, dtype=torch.long)
+        split = int(0.8 * len(X))
+        if train:
+            self.data, self.labels = X[:split], y[:split]
+        else:
+            self.data, self.labels = X[split:], y[split:]
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx], self.labels[idx]
 
 
-def fashion_dataset(root="./data", train=True):
-    """FashionMNIST, scaled to [-1, 1]."""
-    from torchvision import datasets, transforms
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Lambda(_scale_to_minus1_1),
-    ])
-    return datasets.FashionMNIST(root=root, train=train, download=True, transform=transform)
+class FashionMNISTDataset(Dataset):
+    num_classes = 10
+
+    def __init__(self, root="./data", train=True, **kwargs):
+        from torchvision import datasets, transforms
+
+        transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Lambda(_scale_to_minus1_1),
+            ]
+        )
+        self._ds = datasets.FashionMNIST(
+            root=root, train=train, download=True, transform=transform
+        )
+
+    def __len__(self):
+        return len(self._ds)
+
+    def __getitem__(self, idx):
+        return self._ds[idx]  # (image, label)
 
 
-def cifar_dataset(root="./data", train=True):
-    """CIFAR-10, scaled to [-1, 1]."""
-    from torchvision import datasets, transforms
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Lambda(_scale_to_minus1_1),
-    ])
-    return datasets.CIFAR10(root=root, train=train, download=True, transform=transform)
+class CifarDataset(Dataset):
+    num_classes = 10
+
+    def __init__(self, root="./data", train=True, **kwargs):
+        from torchvision import datasets, transforms
+
+        transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Lambda(_scale_to_minus1_1),
+            ]
+        )
+        self._ds = datasets.CIFAR10(
+            root=root, train=train, download=True, transform=transform
+        )
+
+    def __len__(self):
+        return len(self._ds)
+
+    def __getitem__(self, idx):
+        return self._ds[idx]  # (image, label)

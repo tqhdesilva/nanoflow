@@ -1,5 +1,10 @@
 # @package _global_
 defaults:
-  - /dataset: moons
-  - /model: mlp
-  - /inference: moons
+  - override /dataset: moons
+  - override /model: mlp
+
+inference:
+  n_samples: 1000
+  save_path: moons_samples.png
+  infer_unit:
+    num_steps: 100

@@ -1,5 +1,6 @@
 defaults:
   - fashion_schema
 
+_target_: datasets.FashionMNISTDataset
 name: fashion
 root: ./data

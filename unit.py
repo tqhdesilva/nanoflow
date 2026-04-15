@@ -2,31 +2,32 @@
 
 import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Optional, Tuple
+from typing import Any, Tuple, Optional
+from datetime import datetime
+import warnings
 
-import hydra
 import torch
 import torch.distributed as dist
-import torch.nn as nn
 import torch.nn.functional as F
+from omegaconf import OmegaConf
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 from torchtnt.framework import AutoUnit, State
 from torchtnt.framework.auto_unit import TrainStepResults
+from torchtnt.framework import AutoPredictUnit
 from torchvision.utils import make_grid
 
-from config import NanoFlowConfig
-from datasets import moons_dataset, fashion_dataset, cifar_dataset
 from flow import NoisePath
-
 
 # ---------------------------------------------------------------------------
 # EMA helpers
 # ---------------------------------------------------------------------------
+
 
 @torch.no_grad()
 def _init_ema(model):
@@ -49,6 +50,7 @@ def load_ema(model, ema_params):
 # ---------------------------------------------------------------------------
 # Checkpointing
 # ---------------------------------------------------------------------------
+
 
 def save_checkpoint(path, model, optimizer, epoch, step, losses, **extra):
     state = {
@@ -73,29 +75,125 @@ def load_checkpoint(path, model, optimizer):
 # Sampling
 # ---------------------------------------------------------------------------
 
+
 @torch.no_grad()
-def sample(model, path: NoisePath, n_samples=1000, num_steps=100, device="cpu", shape=(2,)):
-    """Generate samples via the path's sampling algorithm."""
-    xt = torch.randn(n_samples, *shape, device=device)
+def euler_sample(model, noise, num_steps):
+    """Generate samples via Euler integration of the learned velocity field."""
+    xt = noise
     dt = 1.0 / num_steps
-    for t_val in torch.linspace(0, 1, num_steps, device=device):
-        xt = path.sample_step(model, xt, t_val, dt)
+    for t_val in torch.linspace(0, 1, num_steps, device=noise.device):
+        vt = model(xt, t_val.expand(xt.size(0)))
+        xt = xt + vt * dt
     return xt
 
 
 # ---------------------------------------------------------------------------
-# Dataset / DataLoader helpers
+# Reproducibility metadata
 # ---------------------------------------------------------------------------
 
-def _build_dataset(cfg: NanoFlowConfig, train=True):
-    ds = cfg.dataset
-    if ds.name == "moons":
-        return moons_dataset(n=ds.n, noise=ds.noise, train=train)  # type: ignore[arg-type]
-    elif ds.name == "fashion":
-        return fashion_dataset(root=ds.root, train=train)  # type: ignore[arg-type]
-    elif ds.name == "cifar10":
-        return cifar_dataset(root=ds.root, train=train)  # type: ignore[arg-type]
-    raise ValueError(f"Unknown dataset: {ds.name}")
+
+def _save_metadata(path, cfg):
+    """Save resolved config + git info to a single metadata.yaml."""
+    import yaml
+
+    meta = {"config": OmegaConf.to_container(cfg, resolve=True)}
+    try:
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).strip().decode()
+        branch = (
+            subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+            .strip()
+            .decode()
+        )
+        dirty = subprocess.call(["git", "diff", "--quiet"]) != 0
+        diff = subprocess.check_output(["git", "diff"]).decode() if dirty else ""
+        git = {"commit": commit, "branch": branch, "dirty": dirty}
+        if diff:
+            git["diff"] = diff
+        meta["git"] = git
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    with open(path, "w") as f:
+        yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
+
+
+# ---------------------------------------------------------------------------
+# InferenceUnit
+# ---------------------------------------------------------------------------
+
+
+class InferenceUnit(AutoPredictUnit):
+    """Inference unit. Loads checkpoint + EMA, generates samples via euler sampling.
+
+    Each predict_step generates noise internally and runs euler integration.
+    The dataloader supplies conditioning info (unused for unconditional generation,
+    but the right interface for future guidance).
+
+    Instantiated via hydra.utils.instantiate(cfg.infer_unit). Receives:
+      model:       nn.Module (already built)
+      checkpoint:  Optional[str]
+      num_steps:   int
+      latent_shape: Optional[list[int]] — None means 2D (e.g. moons)
+      device:      str
+    """
+
+    def __init__(
+        self,
+        model,
+        checkpoint: Optional[str] = None,
+        num_steps: int = 100,
+        latent_shape: Optional[list[int]] = None,
+        device: str = "cpu",
+    ):
+        dev = torch.device(device)
+        model = model.to(dev)
+
+        if checkpoint:
+            ckpt = torch.load(checkpoint, weights_only=True, map_location=dev)
+            model.load_state_dict(ckpt["model"])
+            if "ema" in ckpt:
+                load_ema(model, [p.to(dev) for p in ckpt["ema"]])
+                print("Using EMA weights")
+            print(f"Loaded checkpoint: {checkpoint} (epoch {ckpt.get('epoch', '?')})")
+
+        model.eval()
+        super().__init__(module=model, device=dev)
+
+        # Set after super().__init__ — nn.Module needs _modules before setattr
+        self.num_steps = num_steps
+        self.latent_shape = latent_shape
+        self.results = []
+
+    def _prefetch_next_batch(self, state, data_iter):
+        # Override: AutoPredictUnit uses torch.cuda.stream for prefetching,
+        # which crashes on MPS/CPU. This does simple synchronous prefetching.
+        if self.device.type != "cuda":
+            try:
+                next_batch = next(data_iter)
+            except StopIteration:
+                self._phase_to_next_batch[state.active_phase] = None
+                self._is_last_batch = True
+                return
+            self._phase_to_next_batch[state.active_phase] = self.move_data_to_device(
+                state,
+                next_batch,
+                non_blocking=False,
+            )
+        else:
+            super()._prefetch_next_batch(state, data_iter)
+
+    def predict_step(self, state: State, data: Tuple) -> torch.Tensor:
+        # TODO: pass data as conditioning to the model for guided generation
+        n_samples = data[0].shape[0]
+        shape = tuple(self.latent_shape) if self.latent_shape else (2,)
+        noise = torch.randn(n_samples, *shape, device=self.device)
+        samples = euler_sample(self.module, noise, self.num_steps)
+        self.results.append(samples)
+        return samples
+
+
+# ---------------------------------------------------------------------------
+# DataLoader helper
+# ---------------------------------------------------------------------------
 
 
 def _build_dataloader(dataset, batch_size, num_workers, rank, world_size, shuffle=True):
@@ -118,57 +216,97 @@ def _build_dataloader(dataset, batch_size, num_workers, rank, world_size, shuffl
 # FlowMatchingUnit
 # ---------------------------------------------------------------------------
 
-class FlowMatchingUnit(AutoUnit):
-    """Self-contained training unit. Builds its own model, path, loaders, and writer."""
 
-    def __init__(self, cfg: NanoFlowConfig):
+class FlowMatchingUnit(AutoUnit):
+    """Self-contained training unit. Builds its own model, path, loaders, and writer.
+
+    Instantiated via hydra.utils.instantiate(cfg.train_unit). With recursive
+    instantiation, receives:
+      model:    nn.Module (already built)
+      flow:     NoisePath (already built)
+      dataset:  functools.partial (_partial_=True) — call with train=True/False
+      training: DictConfig (no _target_, stays as config)
+      logger:   DictConfig or None
+    """
+
+    def __init__(
+        self,
+        *,
+        model,
+        flow,
+        dataset,
+        training,
+        logger=None,
+        device="cpu",
+        runs_dir="runs",
+    ):
         # Distributed setup
         self.rank, self.world_size = self._setup_distributed()
         if self.world_size > 1:
-            device = torch.device(f"cuda:{self.rank}")
+            dev = torch.device(f"cuda:{self.rank}")
         else:
-            device = torch.device(cfg.device)
+            dev = torch.device(device)
 
-        # Flow path
-        self.path: NoisePath = hydra.utils.instantiate(cfg.flow)
+        # Flow path (already instantiated)
+        self.path: NoisePath = flow
 
-        # Model
-        module = hydra.utils.instantiate(cfg.model).to(device)
+        # Model (already instantiated, move to device + optional DDP)
+        module = model.to(dev)
         if self.rank == 0:
             print(f"Model params: {sum(p.numel() for p in module.parameters()):,}")
         if self.world_size > 1:
             module = DDP(module, device_ids=[self.rank])
 
         # AutoUnit init
-        tcfg = cfg.training
+        tcfg = training
         super().__init__(
             module=module,
-            device=device,
-            precision=getattr(tcfg, "precision", None),
+            device=dev,
+            precision=tcfg.precision,
             clip_grad_norm=tcfg.grad_clip if tcfg.grad_clip > 0 else None,
             step_lr_interval="epoch",
         )
 
-        self.cfg = cfg
         self.tcfg = tcfg
 
-        # Image shape
-        self.image_shape = tuple(cfg.inference.image_shape) if cfg.inference.image_shape else None
+        # Sample logger config (for generating samples during training)
+        self.logger_cfg = logger
 
-        # DataLoaders
-        self.train_ds = _build_dataset(cfg, train=True)
-        val_ds = _build_dataset(cfg, train=False)
+        # DataLoaders (dataset is a partial — call with train flag)
+        self.train_ds = dataset(train=True)
+        val_ds = dataset(train=False)
         self.train_loader = _build_dataloader(
-            self.train_ds, tcfg.batch_size, tcfg.num_workers,
-            self.rank, self.world_size, shuffle=True,
+            self.train_ds,
+            tcfg.batch_size,
+            tcfg.num_workers,
+            self.rank,
+            self.world_size,
+            shuffle=True,
         )
         self.val_loader = _build_dataloader(
-            val_ds, tcfg.batch_size, tcfg.num_workers,
-            self.rank, self.world_size, shuffle=False,
+            val_ds,
+            tcfg.batch_size,
+            tcfg.num_workers,
+            self.rank,
+            self.world_size,
+            shuffle=False,
         )
 
+        # Run directory: {runs_dir}/{prefix}_{timestamp}/
+        run_id = f"{tcfg.run_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        self._run_dir = Path(runs_dir) / run_id
+        self._ckpt_dir = self._run_dir / "checkpoints"
+        self._tb_dir = self._run_dir / "tensorboard"
+        if self.rank == 0:
+            self._run_dir.mkdir(parents=True, exist_ok=True)
+            self._ckpt_dir.mkdir(parents=True, exist_ok=True)
+            self._tb_dir.mkdir(parents=True, exist_ok=True)
+            print(f"Run dir: {self._run_dir}")
+
         # TensorBoard (rank 0 only)
-        self.writer = SummaryWriter(log_dir=tcfg.log_dir) if self.rank == 0 else None
+        self.writer = (
+            SummaryWriter(log_dir=str(self._tb_dir)) if self.rank == 0 else None
+        )
 
         # EMA — initialized lazily after first training step (not from random init)
         self.ema_params = None
@@ -179,10 +317,6 @@ class FlowMatchingUnit(AutoUnit):
         self._epoch_loss = 0.0
         self._epoch_steps = 0
         self._epoch_start = 0.0
-
-        # Checkpointing
-        self._ckpt_dir = Path(tcfg.checkpoint_dir)
-        self._ckpt_dir.mkdir(parents=True, exist_ok=True)
 
         # Resume
         if tcfg.resume:
@@ -217,10 +351,18 @@ class FlowMatchingUnit(AutoUnit):
         optimizer = torch.optim.Adam(module.parameters(), lr=self.tcfg.lr)
         warmup = getattr(self.tcfg, "warmup_epochs", 0)
         if warmup > 0:
-            scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [
-                torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1e-3, total_iters=warmup),
-                torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.tcfg.epochs - warmup),
-            ], milestones=[warmup])
+            scheduler = torch.optim.lr_scheduler.SequentialLR(
+                optimizer,
+                [
+                    torch.optim.lr_scheduler.LinearLR(
+                        optimizer, start_factor=1e-3, total_iters=warmup
+                    ),
+                    torch.optim.lr_scheduler.CosineAnnealingLR(
+                        optimizer, T_max=self.tcfg.epochs - warmup
+                    ),
+                ],
+                milestones=[warmup],
+            )
         else:
             scheduler = None
         return optimizer, scheduler
@@ -243,7 +385,9 @@ class FlowMatchingUnit(AutoUnit):
                 self._is_last_batch = True
                 return
             self._phase_to_next_batch[state.active_phase] = self.move_data_to_device(
-                state, next_batch, non_blocking=False,
+                state,
+                next_batch,
+                non_blocking=False,
             )
         else:
             super()._prefetch_next_batch(state, data_iter)
@@ -265,7 +409,9 @@ class FlowMatchingUnit(AutoUnit):
         self._epoch_steps = 0
         self._epoch_start = time.perf_counter()
 
-    def on_train_step_end(self, state: State, data, step: int, results: TrainStepResults) -> None:
+    def on_train_step_end(
+        self, state: State, data, step: int, results: TrainStepResults
+    ) -> None:
         loss_val = results.loss.item()
         self._epoch_loss += loss_val
         self._epoch_steps += 1
@@ -285,7 +431,9 @@ class FlowMatchingUnit(AutoUnit):
             lr = self.optimizer.param_groups[0]["lr"]
             self.writer.add_scalar("train/lr", lr, global_step)
             if results.total_grad_norm is not None:
-                self.writer.add_scalar("train/grad_norm", results.total_grad_norm.item(), global_step)
+                self.writer.add_scalar(
+                    "train/grad_norm", results.total_grad_norm.item(), global_step
+                )
 
     def on_train_epoch_end(self, state: State) -> None:
         epoch = self.train_progress.num_epochs_completed
@@ -295,7 +443,11 @@ class FlowMatchingUnit(AutoUnit):
 
         # Validation
         val_loss = None
-        if self.rank == 0 and self.val_loader and (epoch % self.tcfg.save_every == 0 or epoch == self.tcfg.epochs):
+        if (
+            self.rank == 0
+            and self.val_loader
+            and (epoch % self.tcfg.save_every == 0 or epoch == self.tcfg.epochs)
+        ):
             val_loss = self._run_validation()
 
         # Per-epoch logging
@@ -327,7 +479,7 @@ class FlowMatchingUnit(AutoUnit):
                 self._save(epoch)
 
             # Sample images
-            if self.image_shape and epoch % self.tcfg.save_every == 0 and self.writer:
+            if self.logger_cfg and epoch % self.tcfg.save_every == 0 and self.writer:
                 self._log_samples(epoch)
 
     def on_train_end(self, state: State) -> None:
@@ -374,19 +526,25 @@ class FlowMatchingUnit(AutoUnit):
         if self.ema_params is not None:
             extra["ema"] = [p.data.cpu() for p in self.ema_params]
         save_checkpoint(
-            self._ckpt_dir / f"{self.tcfg.run_name}_latest.pt",
-            raw, self.optimizer, epoch,
+            self._ckpt_dir / "latest.pt",
+            raw,
+            self.optimizer,
+            epoch,
             self.train_progress.num_steps_completed,
-            self.losses, **extra,
+            self.losses,
+            **extra,
         )
 
     @torch.no_grad()
-    def _log_samples(self, epoch, n_samples=64, num_steps=100):
+    def _log_samples(self, epoch):
+        lcfg = self.logger_cfg
+        shape = tuple(lcfg.latent_shape)
         raw = self._unwrap()
         raw.eval()
         if self.ema_ready():
             load_ema(raw, self.ema_params)
-        samples = sample(raw, self.path, n_samples, num_steps, self.device, shape=self.image_shape)
+        noise = torch.randn(lcfg.n_samples, *shape, device=self.device)
+        samples = euler_sample(raw, noise, lcfg.num_steps)
         if self.ema_ready():
             load_ema(raw, self.ema_params)  # swap back
         raw.train()
@@ -396,10 +554,12 @@ class FlowMatchingUnit(AutoUnit):
     def _setup_sigterm(self):
         if self.rank != 0:
             return
+
         def handler(sig, frame):
             epoch = self.train_progress.num_epochs_completed
-            path = self._ckpt_dir / f"{self.tcfg.run_name}_preempted.pt"
+            path = self._ckpt_dir / "preempted.pt"
             print(f"\nSIGTERM at epoch {epoch}, saving to {path}")
             self._save(epoch)
             sys.exit(0)
+
         signal.signal(signal.SIGTERM, handler)

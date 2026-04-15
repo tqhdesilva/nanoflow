@@ -6,23 +6,32 @@ from typing import Optional
 from hydra.core.config_store import ConfigStore
 from omegaconf import MISSING
 
-
 # ---- dataset group ----
 
 
 @dataclass
 class DatasetConfig:
+    _target_: str = MISSING
+    _partial_: bool = True
     name: str = MISSING
 
 
 @dataclass
 class MoonsDatasetConfig(DatasetConfig):
+    _target_: str = "datasets.MoonsDataset"
     n: int = 8000
     noise: float = 0.05
 
 
 @dataclass
-class ImageDatasetConfig(DatasetConfig):
+class FashionDatasetConfig(DatasetConfig):
+    _target_: str = "datasets.FashionMNISTDataset"
+    root: str = "./data"
+
+
+@dataclass
+class CifarDatasetConfig(DatasetConfig):
+    _target_: str = "datasets.CifarDataset"
     root: str = "./data"
 
 
@@ -85,10 +94,8 @@ class TrainingConfig:
     lr: float = 1e-3
     warmup_epochs: int = 0
     save_every: int = 10
-    checkpoint_dir: str = "checkpoints"
     resume: Optional[str] = None
-    run_name: str = "${dataset.name}_${now:%Y%m%d_%H%M%S}"
-    log_dir: str = "runs/${training.run_name}"
+    run_prefix: str = "${dataset.name}"
     log_every: int = 50
     grad_clip: float = 1.0
     ema_decay: float = 0
@@ -96,45 +103,76 @@ class TrainingConfig:
     precision: Optional[str] = None
 
 
-# ---- inference group ----
+# ---- sampling / inference ----
 
 
 @dataclass
-class InferenceConfig:
-    n_samples: int = 64
+class SampleLoggerConfig:
     num_steps: int = 100
-    image_shape: Optional[list[int]] = None
-    samples_plot: str = "${dataset.name}_samples.png"
+    latent_shape: Optional[list[int]] = None
+    n_samples: int = 64
+
+
+# ---- unit configs ----
+
+
+@dataclass
+class NanoFlowConfig:
+    """Config for FlowMatchingUnit (training only)."""
+
+    _target_: str = "unit.FlowMatchingUnit"
+    dataset: DatasetConfig = field(default_factory=DatasetConfig)
+    model: ModelConfig = field(default_factory=ModelConfig)
+    flow: FlowConfig = field(default_factory=FlowConfig)
+    training: TrainingConfig = field(default_factory=TrainingConfig)
+    logger: Optional[SampleLoggerConfig] = None
+    device: str = "cpu"
+    runs_dir: str = "runs"
+
+
+@dataclass
+class InferenceUnitConfig:
+    """Config for InferenceUnit."""
+
+    _target_: str = "unit.InferenceUnit"
+    model: ModelConfig = field(default_factory=ModelConfig)
+    checkpoint: Optional[str] = None
+    num_steps: int = 100
+    latent_shape: Optional[list[int]] = None
+    device: str = "cpu"
 
 
 # ---- top-level ----
 
 
 @dataclass
-class NanoFlowConfig:
-    dataset: DatasetConfig = field(default_factory=DatasetConfig)
-    model: ModelConfig = field(default_factory=ModelConfig)
-    flow: FlowConfig = field(default_factory=FlowConfig)
-    training: TrainingConfig = field(default_factory=TrainingConfig)
-    inference: InferenceConfig = field(default_factory=InferenceConfig)
-    device: str = "cpu"
-    save: bool = False
+class InferenceConfig:
+    infer_unit: InferenceUnitConfig
+    n_samples: int = 64
+    save_path: Optional[str] = None
+
+
+@dataclass
+class Config:
+    # Shared — populated by Hydra config groups, referenced by units via interpolation
+    train_unit: Optional[NanoFlowConfig] = None
+    inference: Optional[InferenceConfig] = None
 
 
 def _register() -> None:
     cs = ConfigStore.instance()
-    cs.store(name="config_schema", node=NanoFlowConfig)
+    # Config not registered as top-level schema — dataset/model/flow/training
+    # live as top-level Hydra groups referenced via interpolation by the units.
+    cs.store(name="train_unit_schema", node=NanoFlowConfig)
+    cs.store(name="infer_unit_schema", node=InferenceUnitConfig)
     cs.store(group="dataset", name="moons_schema", node=MoonsDatasetConfig)
-    cs.store(group="dataset", name="fashion_schema", node=ImageDatasetConfig)
-    cs.store(group="dataset", name="cifar10_schema", node=ImageDatasetConfig)
+    cs.store(group="dataset", name="fashion_schema", node=FashionDatasetConfig)
+    cs.store(group="dataset", name="cifar10_schema", node=CifarDatasetConfig)
     cs.store(group="model", name="mlp_schema", node=MLPConfig)
     cs.store(group="model", name="unet_fashion_schema", node=UNetFashionConfig)
     cs.store(group="model", name="unet_cifar_schema", node=UNetCifarConfig)
     cs.store(group="flow", name="condot_schema", node=CondOTConfig)
     cs.store(group="training", name="default_schema", node=TrainingConfig)
-    cs.store(group="inference", name="moons_schema", node=InferenceConfig)
-    cs.store(group="inference", name="fashion_schema", node=InferenceConfig)
-    cs.store(group="inference", name="cifar10_schema", node=InferenceConfig)
 
 
 _register()

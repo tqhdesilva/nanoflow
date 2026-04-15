@@ -1,6 +1,7 @@
 defaults:
   - moons_schema
 
+_target_: datasets.MoonsDataset
 name: moons
 n: 8000
 noise: 0.05

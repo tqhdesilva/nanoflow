@@ -6,10 +6,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 # ---------------------------------------------------------------------------
 # Sinusoidal time embedding (shared by MLP and UNet)
 # ---------------------------------------------------------------------------
+
 
 class SinusoidalEmbedding(nn.Module):
     def __init__(self, dim):
@@ -32,6 +32,7 @@ class SinusoidalEmbedding(nn.Module):
 # MLP (for 2D toy data)
 # ---------------------------------------------------------------------------
 
+
 class Block(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -49,6 +50,7 @@ class MLP(nn.Module):
     t: (B,)   — time in [0, 1]
     out: (B, 2) — predicted velocity vector
     """
+
     def __init__(self, hidden_dim=128, num_layers=4, time_dim=32):
         super().__init__()
         self.time_embed = SinusoidalEmbedding(time_dim)
@@ -57,11 +59,11 @@ class MLP(nn.Module):
         self.output_proj = nn.Linear(hidden_dim, 2)
 
     def forward(self, x, t):
-        t_emb = self.time_embed(t)           # (B, time_dim)
-        h = torch.cat([x, t_emb], dim=-1)    # (B, 2 + time_dim)
+        t_emb = self.time_embed(t)  # (B, time_dim)
+        h = torch.cat([x, t_emb], dim=-1)  # (B, 2 + time_dim)
         h = self.input_proj(h)
         for block in self.blocks:
-            h = block(h) + h                 # residual
+            h = block(h) + h  # residual
         return self.output_proj(h)
 
 
@@ -69,8 +71,10 @@ class MLP(nn.Module):
 # UNet (for images, generalized depth)
 # ---------------------------------------------------------------------------
 
+
 class ResBlock(nn.Module):
     """Conv residual block with time conditioning."""
+
     def __init__(self, in_ch, out_ch, time_dim):
         super().__init__()
         self.norm1 = nn.GroupNorm(8, in_ch)
@@ -103,31 +107,37 @@ class UNet(nn.Module):
     Channel progression: [base_ch, base_ch*2, ..., base_ch*(2**(depth-1))]
     Spatial: H → H/2 → ... → H/(2**depth) at bottleneck
     """
+
     def __init__(self, in_ch=1, base_ch=32, depth=2, time_dim=64, use_attn=False):
         super().__init__()
-        channels = [base_ch * (2 ** i) for i in range(depth)]
+        channels = [base_ch * (2**i) for i in range(depth)]
 
         # Time embedding: sinusoidal → 2-layer MLP
         self.time_embed = nn.Sequential(
             SinusoidalEmbedding(time_dim),
-            nn.Linear(time_dim, time_dim), nn.GELU(),
+            nn.Linear(time_dim, time_dim),
+            nn.GELU(),
             nn.Linear(time_dim, time_dim),
         )
 
         # Encoder
         self.conv_in = nn.Conv2d(in_ch, channels[0], 3, padding=1)
-        self.enc_blocks = nn.ModuleList([
-            ResBlock(channels[i], channels[i], time_dim) for i in range(depth)
-        ])
+        self.enc_blocks = nn.ModuleList(
+            [ResBlock(channels[i], channels[i], time_dim) for i in range(depth)]
+        )
         # down[i]: channels[i] → channels[i+1] (or channels[i] for last level → bottleneck)
-        self.downs = nn.ModuleList([
-            nn.Conv2d(
-                channels[i],
-                channels[i + 1] if i < depth - 1 else channels[i],
-                3, stride=2, padding=1,
-            )
-            for i in range(depth)
-        ])
+        self.downs = nn.ModuleList(
+            [
+                nn.Conv2d(
+                    channels[i],
+                    channels[i + 1] if i < depth - 1 else channels[i],
+                    3,
+                    stride=2,
+                    padding=1,
+                )
+                for i in range(depth)
+            ]
+        )
 
         # Bottleneck
         bot_ch = channels[-1]
@@ -140,15 +150,21 @@ class UNet(nn.Module):
             self.attn_norm = nn.LayerNorm(bot_ch)
 
         # Decoder (reversed encoder levels)
-        self.ups = nn.ModuleList([
-            nn.ConvTranspose2d(channels[i], channels[i], 2, stride=2)
-            for i in range(depth - 1, -1, -1)
-        ])
+        self.ups = nn.ModuleList(
+            [
+                nn.ConvTranspose2d(channels[i], channels[i], 2, stride=2)
+                for i in range(depth - 1, -1, -1)
+            ]
+        )
         # dec[j] at level i (j = depth-1-i): cat skip → channels[i]*2 → channels[i-1]
-        self.dec_blocks = nn.ModuleList([
-            ResBlock(channels[i] * 2, channels[i - 1] if i > 0 else channels[0], time_dim)
-            for i in range(depth - 1, -1, -1)
-        ])
+        self.dec_blocks = nn.ModuleList(
+            [
+                ResBlock(
+                    channels[i] * 2, channels[i - 1] if i > 0 else channels[0], time_dim
+                )
+                for i in range(depth - 1, -1, -1)
+            ]
+        )
 
         self.conv_out = nn.Conv2d(channels[0], in_ch, 1)
 
@@ -167,7 +183,7 @@ class UNet(nn.Module):
         h = self.mid(h, t_emb)
         if self.use_attn:
             B, C, H, W = h.shape
-            h_flat = h.view(B, C, H * W).permute(0, 2, 1)   # (B, H*W, C)
+            h_flat = h.view(B, C, H * W).permute(0, 2, 1)  # (B, H*W, C)
             h_normed = self.attn_norm(h_flat)
             h_attn, _ = self.attn(h_normed, h_normed, h_normed)
             h = (h_flat + h_attn).permute(0, 2, 1).view(B, C, H, W)
