@@ -10,7 +10,7 @@ resume: null
 run_prefix: ${dataset.name}
 
 # --- Logging & instrumentation ---
-log_every: 50
+log_every: 10
 grad_clip: 1.0
 
 # --- EMA (0 = disabled; use 0.9999 for long runs) ---

@@ -6,6 +6,7 @@ defaults:
 training:
   epochs: 20
   num_workers: 4
+  log_every: 2
 
 train_unit:
   logger:
