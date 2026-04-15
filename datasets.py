@@ -3,6 +3,7 @@
 Each dataset returns (data, label) tuples and exposes a `num_classes` attribute.
 """
 
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 
@@ -18,6 +19,7 @@ class MoonsDataset(Dataset):
 
     def __init__(self, n=8000, noise=0.05, train=True, **kwargs):
         X, y = make_moons(n_samples=n, noise=noise)
+        X = np.asarray(X)
         X = (X - X.mean(axis=0)) / X.std(axis=0)
         X = torch.tensor(X, dtype=torch.float32)
         y = torch.tensor(y, dtype=torch.long)

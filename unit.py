@@ -342,8 +342,9 @@ class FlowMatchingUnit(AutoUnit):
         torch.cuda.set_device(rank)
         return rank, world_size
 
-    def _unwrap(self):
-        return self.module.module if hasattr(self.module, "module") else self.module
+    def _unwrap(self) -> torch.nn.Module:
+        m = self.module
+        return m.module if hasattr(m, "module") else m  # type: ignore[union-attr]
 
     # --- AutoUnit interface ---
 
@@ -428,6 +429,7 @@ class FlowMatchingUnit(AutoUnit):
         # Per-step TensorBoard logging
         if self.rank == 0 and self.writer and global_step % self.tcfg.log_every == 0:
             self.writer.add_scalar("train/loss", loss_val, global_step)
+            assert self.optimizer is not None
             lr = self.optimizer.param_groups[0]["lr"]
             self.writer.add_scalar("train/lr", lr, global_step)
             if results.total_grad_norm is not None:
@@ -452,6 +454,7 @@ class FlowMatchingUnit(AutoUnit):
 
         # Per-epoch logging
         if self.rank == 0:
+            assert self.optimizer is not None
             lr = self.optimizer.param_groups[0]["lr"]
             n_samples = self._epoch_steps * self.tcfg.batch_size
             throughput = n_samples / max(epoch_time, 1e-6)
@@ -538,6 +541,8 @@ class FlowMatchingUnit(AutoUnit):
     @torch.no_grad()
     def _log_samples(self, epoch):
         lcfg = self.logger_cfg
+        assert lcfg is not None
+        assert self.writer is not None
         shape = tuple(lcfg.latent_shape)
         raw = self._unwrap()
         raw.eval()

@@ -6,19 +6,19 @@ Minimal from-scratch flow matching, in the spirit of nanoGPT. Pure PyTorch.
 
 ```bash
 # 2D moons (default — fast, good for debugging)
-uv run python train.py device=mps
+uv run python main.py device=mps
 
 # FashionMNIST
-uv run python train.py experiment=fashion device=mps
+uv run python main.py experiment=fashion device=mps
 
 # CIFAR-10
-uv run python train.py experiment=cifar10 device=cuda
+uv run python main.py experiment=cifar10 device=cuda
 ```
 
 Each experiment bundles the right dataset, model, and inference config. Override anything via CLI:
 
 ```bash
-uv run python train.py experiment=cifar10 device=cuda training.epochs=200 training.batch_size=256 save=true
+uv run python main.py experiment=cifar10 device=cuda training.epochs=200 training.batch_size=256 save=true
 ```
 
 ## Experiments
@@ -35,7 +35,7 @@ Configs use [Hydra](https://hydra.cc/) with structured config validation. The ex
 
 Sanity-check the fully materialized config before a run:
 ```bash
-uv run python train.py experiment=cifar10 device=cuda --cfg job
+uv run python main.py experiment=cifar10 device=cuda --cfg job
 ```
 
 ```
@@ -64,7 +64,7 @@ Each run logs to `runs/{experiment}_{timestamp}/`.
 Checkpoints save every `training.save_every` epochs. Resume with:
 
 ```bash
-uv run python train.py training.resume=checkpoints/{run_name}_latest.pt
+uv run python main.py training.resume=checkpoints/{run_name}_latest.pt
 ```
 
 SIGTERM (e.g. RunPod preemption) triggers a checkpoint save before exit.

@@ -5,27 +5,27 @@ Minimal from-scratch flow matching. Modular, nanoGPT-style.
 ## Running
 
 ```bash
-uv run python train.py                                    # 2D moons (default, CPU)
-uv run python train.py device=mps                         # moons on MPS
-uv run python train.py experiment=fashion device=mps      # FashionMNIST
-uv run python train.py experiment=cifar10 device=cuda      # CIFAR-10
+uv run python main.py                                    # 2D moons (default, CPU)
+uv run python main.py device=mps                         # moons on MPS
+uv run python main.py experiment=fashion device=mps      # FashionMNIST
+uv run python main.py experiment=cifar10 device=cuda      # CIFAR-10
 ```
 
 Override any config field via CLI:
 ```bash
-uv run python train.py experiment=cifar10 device=cuda training.epochs=200 training.batch_size=256 save=true
-uv run python train.py training.resume=runs/moons_20260413_120000/checkpoints/latest.pt
+uv run python main.py experiment=cifar10 device=cuda training.epochs=200 training.batch_size=256 save=true
+uv run python main.py training.resume=runs/moons_20260413_120000/checkpoints/latest.pt
 ```
 
 Multi-GPU:
 ```bash
-torchrun --nproc_per_node=N train.py experiment=cifar10 device=cuda
+torchrun --nproc_per_node=N main.py experiment=cifar10 device=cuda
 ```
 
 ## Structure
 
 ```
-train.py          # Hydra entry point — training only
+main.py           # Hydra entry point — training + inference
 inference.py      # Standalone inference — load from run_dir or experiment+checkpoint
 config.py         # Structured config dataclasses (schema validation)
 unit.py           # FlowMatchingUnit(AutoUnit), SamplingUnit(AutoPredictUnit), euler_sample
@@ -47,7 +47,7 @@ configs/
 
 Before any run, sanity-check the fully materialized config with:
 ```bash
-uv run python train.py experiment=cifar10 device=cuda --cfg job
+uv run python main.py experiment=cifar10 device=cuda --cfg job
 ```
 Replace the experiment/overrides to match your intended command. Hydra resolves all interpolations and prints the final values.
 
