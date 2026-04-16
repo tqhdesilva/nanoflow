@@ -9,6 +9,8 @@ __pycache__/
 !fashion_loss.png
 !cifar10_samples.png
 !cifar10_loss.png
+!fashion_cfg_samples.png
+!moons_cfg_samples.png
 checkpoints/
 outputs/
 *.jpg
