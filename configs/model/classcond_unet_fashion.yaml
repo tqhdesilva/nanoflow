@@ -1,0 +1,10 @@
+defaults:
+  - classcond_unet_fashion_schema
+
+_target_: models.ClassCondUNet
+in_ch: 1
+base_ch: 32
+depth: 2
+time_dim: 64
+use_attn: false
+num_classes: 10

@@ -1,0 +1,17 @@
+# @package _global_
+defaults:
+  - override /dataset: moons
+  - override /model: classcond_mlp
+
+training:
+  p_uncond: 0.1
+
+inference:
+  n_samples: 1000
+  save_path: moons_cfg_samples.png
+  class_sampler:
+    num_classes: 2
+    guidance_scale: 2.0
+    probs: null
+  infer_unit:
+    num_steps: 100

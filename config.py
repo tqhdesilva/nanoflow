@@ -71,6 +71,37 @@ class UNetCifarConfig(ModelConfig):
     use_attn: bool = True
 
 
+@dataclass
+class ClassCondMLPConfig(ModelConfig):
+    _target_: str = "models.ClassCondMLP"
+    hidden_dim: int = 128
+    num_layers: int = 4
+    time_dim: int = 32
+    num_classes: int = 2
+
+
+@dataclass
+class ClassCondUNetFashionConfig(ModelConfig):
+    _target_: str = "models.ClassCondUNet"
+    in_ch: int = 1
+    base_ch: int = 32
+    depth: int = 2
+    time_dim: int = 64
+    use_attn: bool = False
+    num_classes: int = 10
+
+
+@dataclass
+class ClassCondUNetCifarConfig(ModelConfig):
+    _target_: str = "models.ClassCondUNet"
+    in_ch: int = 3
+    base_ch: int = 128
+    depth: int = 3
+    time_dim: int = 256
+    use_attn: bool = True
+    num_classes: int = 10
+
+
 # ---- flow group ----
 
 
@@ -101,6 +132,7 @@ class TrainingConfig:
     ema_decay: float = 0
     num_workers: int = 0
     precision: Optional[str] = None
+    p_uncond: Optional[float] = None
 
 
 # ---- sampling / inference ----
@@ -111,6 +143,8 @@ class SampleLoggerConfig:
     num_steps: int = 100
     latent_shape: Optional[list[int]] = None
     n_samples: int = 64
+    guidance_scale: float = 1.0
+    # TODO should we also add optional class sampler?
 
 
 # ---- unit configs ----
@@ -142,6 +176,13 @@ class InferenceUnitConfig:
     device: str = "cpu"
 
 
+@dataclass
+class ClassSampler:
+    num_classes: int = 10
+    guidance_scale: float = 1.0
+    probs: Optional[list[float]] = None
+
+
 # ---- top-level ----
 
 
@@ -150,6 +191,7 @@ class InferenceConfig:
     infer_unit: InferenceUnitConfig
     n_samples: int = 64
     save_path: Optional[str] = None
+    class_sampler: Optional[ClassSampler] = None
 
 
 @dataclass
@@ -171,6 +213,17 @@ def _register() -> None:
     cs.store(group="model", name="mlp_schema", node=MLPConfig)
     cs.store(group="model", name="unet_fashion_schema", node=UNetFashionConfig)
     cs.store(group="model", name="unet_cifar_schema", node=UNetCifarConfig)
+    cs.store(group="model", name="classcond_mlp_schema", node=ClassCondMLPConfig)
+    cs.store(
+        group="model",
+        name="classcond_unet_fashion_schema",
+        node=ClassCondUNetFashionConfig,
+    )
+    cs.store(
+        group="model",
+        name="classcond_unet_cifar_schema",
+        node=ClassCondUNetCifarConfig,
+    )
     cs.store(group="flow", name="condot_schema", node=CondOTConfig)
     cs.store(group="training", name="default_schema", node=TrainingConfig)
 

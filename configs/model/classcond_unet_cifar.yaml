@@ -1,0 +1,10 @@
+defaults:
+  - classcond_unet_cifar_schema
+
+_target_: models.ClassCondUNet
+in_ch: 3
+base_ch: 128
+depth: 3
+time_dim: 256
+use_attn: true
+num_classes: 10

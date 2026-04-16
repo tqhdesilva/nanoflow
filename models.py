@@ -67,6 +67,29 @@ class MLP(nn.Module):
         return self.output_proj(h)
 
 
+# TODO rule of 3 -> we should put some common attributes into a base class:
+# null_token
+# num_classes
+class ClassCondMLP(MLP):
+    """MLP with class conditioning for CFG. forward(x, t, cond)."""
+
+    def __init__(self, num_classes, **kwargs):
+        super().__init__(**kwargs)
+        self.num_classes = num_classes
+        self.null_token = num_classes
+        self.class_embed = nn.Embedding(num_classes + 1, self.time_embed.dim)
+
+    def forward(self, x, t, cond=None):
+        if cond is None:
+            cond = torch.full((x.size(0),), self.null_token, device=x.device)
+        t_emb = self.time_embed(t) + self.class_embed(cond)
+        h = torch.cat([x, t_emb], dim=-1)
+        h = self.input_proj(h)
+        for block in self.blocks:
+            h = block(h) + h
+        return self.output_proj(h)
+
+
 # ---------------------------------------------------------------------------
 # UNet (for images, generalized depth)
 # ---------------------------------------------------------------------------
@@ -170,7 +193,9 @@ class UNet(nn.Module):
 
     def forward(self, x, t):
         t_emb = self.time_embed(t)
+        return self._forward_with_emb(x, t_emb)
 
+    def _forward_with_emb(self, x, t_emb):
         # Encoder: collect skip connections
         h = self.conv_in(x)
         skips = []
@@ -194,3 +219,20 @@ class UNet(nn.Module):
             h = dec(torch.cat([h, skip], dim=1), t_emb)
 
         return self.conv_out(h)
+
+
+class ClassCondUNet(UNet):
+    """UNet with class conditioning for CFG. forward(x, t, cond)."""
+
+    def __init__(self, num_classes, **kwargs):
+        super().__init__(**kwargs)
+        self.num_classes = num_classes
+        self.null_token = num_classes
+        time_dim = self.time_embed[1].in_features
+        self.class_embed = nn.Embedding(num_classes + 1, time_dim)
+
+    def forward(self, x, t, cond=None):
+        if cond is None:
+            cond = torch.full((x.size(0),), self.null_token, device=x.device)
+        t_emb = self.time_embed(t) + self.class_embed(cond)
+        return self._forward_with_emb(x, t_emb)

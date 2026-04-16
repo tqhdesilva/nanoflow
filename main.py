@@ -2,6 +2,7 @@
 
 import hydra
 import torch
+from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, TensorDataset
 from torchtnt.framework import train as tnt_train, predict as tnt_predict
 
@@ -34,23 +35,36 @@ def main(cfg: Config) -> None:
     # --- Inference ---
     if cfg.inference is not None:
         icfg = cfg.inference
+        cs = OmegaConf.select(icfg, "class_sampler", default=None)
         if trained_model is not None:
             model = trained_model
             model.eval()
             if ema_params is not None:
                 load_ema(model, ema_params)
-            infer_unit = hydra.utils.instantiate(icfg.infer_unit, model=model)
+            infer_unit = hydra.utils.instantiate(
+                icfg.infer_unit, model=model, class_sampler=cs
+            )
         else:
-            infer_unit = hydra.utils.instantiate(icfg.infer_unit)
+            infer_unit = hydra.utils.instantiate(icfg.infer_unit, class_sampler=cs)
 
-        # TODO: for conditional generation, replace with actual conditioning
-        # tensors (class labels, embeddings, etc.) of shape (n_samples, ...).
-        # predict_step infers n_samples from data.shape[0].
-        predict_loader = DataLoader(
-            TensorDataset(torch.zeros(icfg.n_samples)), batch_size=icfg.n_samples
-        )
+        # Build predict dataloader with conditioning if class_sampler is set
+        if cs is not None:
+            if cs.probs is not None:
+                probs = torch.tensor(cs.probs)
+                labels = torch.multinomial(probs, icfg.n_samples, replacement=True)
+            else:
+                labels = torch.randint(0, cs.num_classes, (icfg.n_samples,))
+            predict_loader = DataLoader(
+                TensorDataset(torch.zeros(icfg.n_samples), labels),
+                batch_size=icfg.n_samples,
+            )
+        else:
+            predict_loader = DataLoader(
+                TensorDataset(torch.zeros(icfg.n_samples)),
+                batch_size=icfg.n_samples,
+            )
         tnt_predict(infer_unit, predict_loader)
-        generated = torch.cat(infer_unit.results, dim=0)
+        generated = torch.cat(infer_unit.results, dim=0).cpu()
 
         if icfg.save_path:
             title = f"{infer_unit.num_steps} Euler steps, {icfg.n_samples} samples"

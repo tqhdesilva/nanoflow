@@ -1,0 +1,28 @@
+# @package _global_
+defaults:
+  - override /dataset: fashion
+  - override /model: classcond_unet_fashion
+
+training:
+  epochs: 20
+  num_workers: 4
+  log_every: 2
+  p_uncond: 0.1
+
+train_unit:
+  logger:
+    n_samples: 64
+    num_steps: 200
+    latent_shape: [1, 28, 28]
+    guidance_scale: 2.0
+
+inference:
+  n_samples: 64
+  save_path: fashion_cfg_samples.png
+  class_sampler:
+    num_classes: 10
+    guidance_scale: 3.0
+    probs: null
+  infer_unit:
+    num_steps: 200
+    latent_shape: [1, 28, 28]

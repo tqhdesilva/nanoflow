@@ -87,6 +87,21 @@ def euler_sample(model, noise, num_steps):
     return xt
 
 
+@torch.no_grad()
+def guided_euler_sample(model, noise, num_steps, cond, guidance_scale):
+    """Euler sampling with classifier-free guidance."""
+    null_cond = torch.full_like(cond, model.null_token)
+    xt = noise
+    dt = 1.0 / num_steps
+    for t_val in torch.linspace(0, 1, num_steps, device=noise.device):
+        t_batch = t_val.expand(xt.size(0))
+        v_cond = model(xt, t_batch, cond)
+        v_uncond = model(xt, t_batch, null_cond)
+        vt = v_uncond + guidance_scale * (v_cond - v_uncond)
+        xt = xt + vt * dt
+    return xt
+
+
 # ---------------------------------------------------------------------------
 # Reproducibility metadata
 # ---------------------------------------------------------------------------
@@ -143,6 +158,7 @@ class InferenceUnit(AutoPredictUnit):
         num_steps: int = 100,
         latent_shape: Optional[list[int]] = None,
         device: str = "cpu",
+        class_sampler=None,
     ):
         dev = torch.device(device)
         model = model.to(dev)
@@ -161,6 +177,7 @@ class InferenceUnit(AutoPredictUnit):
         # Set after super().__init__ — nn.Module needs _modules before setattr
         self.num_steps = num_steps
         self.latent_shape = latent_shape
+        self.class_sampler = class_sampler
         self.results = []
 
     def _prefetch_next_batch(self, state, data_iter):
@@ -182,11 +199,20 @@ class InferenceUnit(AutoPredictUnit):
             super()._prefetch_next_batch(state, data_iter)
 
     def predict_step(self, state: State, data: Tuple) -> torch.Tensor:
-        # TODO: pass data as conditioning to the model for guided generation
         n_samples = data[0].shape[0]
         shape = tuple(self.latent_shape) if self.latent_shape else (2,)
         noise = torch.randn(n_samples, *shape, device=self.device)
-        samples = euler_sample(self.module, noise, self.num_steps)
+        if self.class_sampler is not None and len(data) > 1:
+            cond = data[1].to(self.device)
+            samples = guided_euler_sample(
+                self.module,
+                noise,
+                self.num_steps,
+                cond,
+                self.class_sampler.guidance_scale,
+            )
+        else:
+            samples = euler_sample(self.module, noise, self.num_steps)
         self.results.append(samples)
         return samples
 
@@ -268,6 +294,14 @@ class FlowMatchingUnit(AutoUnit):
         )
 
         self.tcfg = tcfg
+
+        # Validate conditional training config
+        raw_model = module.module if hasattr(module, "module") else module
+        if tcfg.p_uncond is not None and not hasattr(raw_model, "null_token"):
+            raise ValueError(
+                "p_uncond is set but model has no null_token. "
+                "Use a class-conditioned model (ClassCondMLP, ClassCondUNet)."
+            )
 
         # Sample logger config (for generating samples during training)
         self.logger_cfg = logger
@@ -398,7 +432,15 @@ class FlowMatchingUnit(AutoUnit):
         eps = torch.randn_like(x_0)
         t = torch.rand(x_0.size(0), *([1] * (x_0.dim() - 1)), device=x_0.device)
         xt = self.path.interpolate(x_0, eps, t)
-        v_pred = self.module(xt, t.view(-1))
+        if self.tcfg.p_uncond is not None:
+            cond = data[1]
+            if self.tcfg.p_uncond > 0:
+                mask = torch.rand(cond.size(0), device=cond.device) < self.tcfg.p_uncond
+                cond = cond.clone()
+                cond[mask] = self._unwrap().null_token
+            v_pred = self.module(xt, t.view(-1), cond)
+        else:
+            v_pred = self.module(xt, t.view(-1))
         vt = self.path.target(x_0, eps, t)
         loss = F.mse_loss(v_pred, vt)
         return loss, v_pred
@@ -516,7 +558,11 @@ class FlowMatchingUnit(AutoUnit):
             eps = torch.randn_like(x_0)
             t = torch.rand(x_0.size(0), *([1] * (x_0.dim() - 1)), device=x_0.device)
             xt = self.path.interpolate(x_0, eps, t)
-            v_pred = raw(xt, t.view(-1))
+            if self.tcfg.p_uncond is not None:
+                cond = data[1].to(self.device)
+                v_pred = raw(xt, t.view(-1), cond)
+            else:
+                v_pred = raw(xt, t.view(-1))
             vt = self.path.target(x_0, eps, t)
             total_loss += F.mse_loss(v_pred, vt).item()
             n += 1
@@ -549,7 +595,15 @@ class FlowMatchingUnit(AutoUnit):
         if self.ema_ready():
             load_ema(raw, self.ema_params)
         noise = torch.randn(lcfg.n_samples, *shape, device=self.device)
-        samples = euler_sample(raw, noise, lcfg.num_steps)
+        if self.tcfg.p_uncond is not None and hasattr(raw, "num_classes"):
+            labels = torch.randint(
+                0, raw.num_classes, (lcfg.n_samples,), device=self.device
+            )
+            samples = guided_euler_sample(
+                raw, noise, lcfg.num_steps, labels, lcfg.guidance_scale
+            )
+        else:
+            samples = euler_sample(raw, noise, lcfg.num_steps)
         if self.ema_ready():
             load_ema(raw, self.ema_params)  # swap back
         raw.train()

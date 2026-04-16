@@ -1,0 +1,8 @@
+defaults:
+  - classcond_mlp_schema
+
+_target_: models.ClassCondMLP
+hidden_dim: 128
+num_layers: 4
+time_dim: 32
+num_classes: 2
