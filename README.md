@@ -18,7 +18,7 @@ uv run python main.py experiment=cifar10 device=cuda
 Each experiment bundles the right dataset, model, and inference config. Override anything via CLI:
 
 ```bash
-uv run python main.py experiment=cifar10 device=cuda training.epochs=200 training.batch_size=256 save=true
+uv run python main.py experiment=cifar10 device=cuda training.epochs=200 training.batch_size=256 save_path=cifar10_samples.png
 ```
 
 ## Experiments
