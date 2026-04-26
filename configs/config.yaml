@@ -7,15 +7,31 @@ defaults:
   - _self_
 
 device: cpu
+distributed: null   # null | ddp | fsdp
+runs_dir: runs
 
 train_unit:
   _target_: unit.FlowMatchingUnit
-  dataset: ${dataset}
   model: ${model}
   flow: ${flow}
   training: ${training}
-  device: ${device}
-  runs_dir: runs
+  distributed: ${distributed}
+
+train_loader:
+  _target_: unit.build_dataloader
+  dataset: ${dataset}
+  batch_size: ${training.batch_size}
+  num_workers: ${training.num_workers}
+  train: true
+
+val_loader:
+  _target_: unit.build_dataloader
+  dataset: ${dataset}
+  batch_size: ${training.batch_size}
+  num_workers: ${training.num_workers}
+  train: false
+
+sample_logger: null
 
 inference:
   infer_unit:

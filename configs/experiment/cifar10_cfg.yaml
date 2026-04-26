@@ -10,12 +10,11 @@ training:
   log_every: 20
   p_uncond: 0.1
 
-train_unit:
-  logger:
-    n_samples: 64
-    num_steps: 200
-    latent_shape: [3, 32, 32]
-    guidance_scale: 2.0
+sample_logger:
+  n_samples: 64
+  num_steps: 200
+  latent_shape: [3, 32, 32]
+  guidance_scale: 2.0
 
 inference:
   n_samples: 64

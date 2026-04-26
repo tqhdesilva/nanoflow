@@ -155,13 +155,19 @@ class NanoFlowConfig:
     """Config for FlowMatchingUnit (training only)."""
 
     _target_: str = "unit.FlowMatchingUnit"
-    dataset: DatasetConfig = field(default_factory=DatasetConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     flow: FlowConfig = field(default_factory=FlowConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
-    logger: Optional[SampleLoggerConfig] = None
-    device: str = "cpu"
-    runs_dir: str = "runs"
+    distributed: Optional[str] = None
+
+
+@dataclass
+class DataLoaderConfig:
+    _target_: str = "unit.build_dataloader"
+    dataset: DatasetConfig = field(default_factory=DatasetConfig)
+    batch_size: int = 128
+    num_workers: int = 0
+    train: bool = True
 
 
 @dataclass
@@ -198,7 +204,13 @@ class InferenceConfig:
 class Config:
     # Shared — populated by Hydra config groups, referenced by units via interpolation
     train_unit: Optional[NanoFlowConfig] = None
+    train_loader: Optional[DataLoaderConfig] = None
+    val_loader: Optional[DataLoaderConfig] = None
     inference: Optional[InferenceConfig] = None
+    sample_logger: Optional[SampleLoggerConfig] = None
+    device: str = "cpu"
+    distributed: Optional[str] = None  # null | ddp | fsdp
+    runs_dir: str = "runs"
 
 
 def _register() -> None:

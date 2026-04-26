@@ -1,53 +1,124 @@
 """NanoFlow — unified entry point."""
 
+import os
+import signal
+import sys
+
 import hydra
 import torch
+import torch.distributed as dist
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, TensorDataset
-from torchtnt.framework import train as tnt_train, predict as tnt_predict
+from torchtnt.framework import fit as tnt_fit
+from torchtnt.framework import predict as tnt_predict
+from torchtnt.framework.callbacks import LearningRateMonitor
+from torchtnt.utils import init_from_env
 
 import config as _config  # noqa: F401 — registers structured config schema
-from config import Config
-from unit import load_ema
-from viz import plot_samples, plot_image_samples
+from callbacks import (
+    CheckpointCallback,
+    EpochSummaryCallback,
+    RunDirCallback,
+    SampleLoggerCallback,
+    StepLossCallback,
+)
 
 
 @hydra.main(config_path="configs", config_name="config", version_base=None)
-def main(cfg: Config) -> None:
+def main(cfg) -> None:
+    if cfg.device == "mps":
+        device = torch.device("mps")
+    else:
+        device = init_from_env(device_type=cfg.device)
+
     trained_model = None
-    ema_params = None
     train_data = None
 
     # --- Training ---
     if cfg.train_unit is not None:
-        train_unit = hydra.utils.instantiate(cfg.train_unit)
-        tnt_train(
-            train_unit, train_unit.train_loader, max_epochs=train_unit.tcfg.epochs
+        train_unit = hydra.utils.instantiate(cfg.train_unit, device=device)
+        train_loader = hydra.utils.instantiate(cfg.train_loader)
+        val_loader = hydra.utils.instantiate(cfg.val_loader)
+
+        run_dir_cb = RunDirCallback(
+            runs_dir=cfg.runs_dir,
+            run_prefix=cfg.training.run_prefix,
+            cfg=cfg,
         )
-        train_unit.cleanup()
+        ckpt_cb = CheckpointCallback(
+            ckpt_dir=run_dir_cb.ckpt_dir,
+            save_every=cfg.training.save_every,
+            resume=cfg.training.resume,
+        )
+        epoch_summary = EpochSummaryCallback(
+            tb_logger=run_dir_cb.tb_logger,
+            total_epochs=cfg.training.epochs,
+            batch_size=cfg.training.batch_size,
+        )
+        step_loss = StepLossCallback(
+            tb_logger=run_dir_cb.tb_logger,
+            log_every=cfg.training.log_every,
+        )
+        callbacks = [
+            run_dir_cb,
+            ckpt_cb,
+            epoch_summary,
+            step_loss,
+            LearningRateMonitor(loggers=run_dir_cb.tb_logger),
+        ]
+        if cfg.get("sample_logger") is not None:
+            scfg = cfg.sample_logger
+            callbacks.append(
+                SampleLoggerCallback(
+                    tb_logger=run_dir_cb.tb_logger,
+                    save_every=cfg.training.save_every,
+                    latent_shape=list(scfg.latent_shape),
+                    n_samples=scfg.n_samples,
+                    num_steps=scfg.num_steps,
+                    guidance_scale=getattr(scfg, "guidance_scale", 1.0),
+                    p_uncond=cfg.training.p_uncond,
+                )
+            )
 
-        if train_unit.rank == 0:
-            trained_model = train_unit._unwrap()
-            if train_unit.ema_ready():
-                ema_params = train_unit.ema_params
-            train_data = train_unit.train_ds
+        # SIGTERM: write a `preempted.pt` checkpoint, then exit.
+        def _handler(sig, frame):
+            print(f"\nSIGTERM caught — saving preempted checkpoint to {ckpt_cb.save_path('preempted')}")
+            ckpt_cb.save(train_unit, "preempted")
+            sys.exit(0)
 
-    # --- Inference ---
-    if cfg.inference is not None:
+        signal.signal(signal.SIGTERM, _handler)
+
+        tnt_fit(
+            train_unit,
+            train_dataloader=train_loader,
+            eval_dataloader=val_loader,
+            max_epochs=cfg.training.epochs,
+            evaluate_every_n_epochs=cfg.training.save_every,
+            callbacks=callbacks,
+        )
+
+        trained_model = (
+            train_unit.swa_model.module
+            if getattr(train_unit, "swa_model", None) is not None
+            else train_unit._raw_module
+        )
+        train_data = getattr(train_loader, "dataset", None)
+
+    # --- Inference (rank 0 only) ---
+    if cfg.inference is not None and int(os.environ.get("RANK", 0)) == 0:
+        from viz import plot_image_samples, plot_samples
+
         icfg = cfg.inference
         cs = OmegaConf.select(icfg, "class_sampler", default=None)
         if trained_model is not None:
             model = trained_model
             model.eval()
-            if ema_params is not None:
-                load_ema(model, ema_params)
             infer_unit = hydra.utils.instantiate(
                 icfg.infer_unit, model=model, class_sampler=cs
             )
         else:
             infer_unit = hydra.utils.instantiate(icfg.infer_unit, class_sampler=cs)
 
-        # Build predict dataloader with conditioning if class_sampler is set
         if cs is not None:
             if cs.probs is not None:
                 probs = torch.tensor(cs.probs)
@@ -83,6 +154,9 @@ def main(cfg: Config) -> None:
             print(
                 f"Generated {generated.shape[0]} samples (set save_path to write plot)"
             )
+
+    if dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
