@@ -27,6 +27,14 @@ from torchvision.utils import make_grid
 from unit import euler_sample, guided_euler_sample
 
 
+def make_run_dir(runs_dir: str, run_prefix: str) -> Path:
+    """Create `runs/{prefix}_{timestamp}/` and return its path."""
+    run_id = f"{run_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_dir = Path(runs_dir) / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+
 def _git_info() -> dict:
     try:
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).strip().decode()

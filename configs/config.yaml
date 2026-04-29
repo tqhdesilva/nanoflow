@@ -4,6 +4,7 @@ defaults:
   - flow: condot
   - training: default
   - experiment: moons
+  - metrics: none
   - _self_
 
 device: cpu

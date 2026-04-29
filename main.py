@@ -7,6 +7,7 @@ import sys
 import hydra
 import torch
 import torch.distributed as dist
+import yaml
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, TensorDataset
 from torchtnt.framework import fit as tnt_fit
@@ -21,6 +22,7 @@ from callbacks import (
     RunDirCallback,
     SampleLoggerCallback,
     StepLossCallback,
+    make_run_dir,
 )
 
 
@@ -136,6 +138,22 @@ def main(cfg) -> None:
             )
         tnt_predict(infer_unit, predict_loader)
         generated = torch.cat(infer_unit.results, dim=0).cpu()
+
+        metrics_cfg = OmegaConf.select(icfg, "metrics", default=None)
+        if metrics_cfg:
+            if "run_dir_cb" in locals():
+                run_dir = run_dir_cb.run_dir
+            else:
+                run_dir = make_run_dir(cfg.runs_dir, cfg.training.run_prefix)
+                print(f"Run dir: {run_dir}")
+            results = []
+            for m_cfg in metrics_cfg:
+                metric = hydra.utils.instantiate(m_cfg)
+                results.append(metric(generated))
+            metrics_path = run_dir / "metrics.yaml"
+            with open(metrics_path, "w") as f:
+                yaml.dump(results, f, sort_keys=False)
+            print(f"Wrote metrics → {metrics_path}", flush=True)
 
         if icfg.save_path:
             title = f"{infer_unit.num_steps} Euler steps, {icfg.n_samples} samples"

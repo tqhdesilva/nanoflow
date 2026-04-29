@@ -198,6 +198,7 @@ class InferenceConfig:
     n_samples: int = 64
     save_path: Optional[str] = None
     class_sampler: Optional[ClassSampler] = None
+    metrics: Optional[list] = None
 
 
 @dataclass
