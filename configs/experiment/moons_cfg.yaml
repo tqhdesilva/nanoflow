@@ -13,5 +13,5 @@ inference:
     num_classes: 2
     guidance_scale: 2.0
     probs: null
-  infer_unit:
+  sampler:
     num_steps: 100

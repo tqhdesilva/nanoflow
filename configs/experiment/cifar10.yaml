@@ -17,6 +17,6 @@ sample_logger:
 inference:
   n_samples: 64
   save_path: cifar10_samples.png
-  infer_unit:
+  sampler:
     num_steps: 200
     latent_shape: [3, 32, 32]

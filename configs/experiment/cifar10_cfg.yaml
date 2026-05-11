@@ -23,6 +23,6 @@ inference:
     num_classes: 10
     guidance_scale: 3.0
     probs: null
-  infer_unit:
+  sampler:
     num_steps: 200
     latent_shape: [3, 32, 32]

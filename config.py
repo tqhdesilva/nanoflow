@@ -152,9 +152,9 @@ class SampleLoggerConfig:
 
 @dataclass
 class NanoFlowConfig:
-    """Config for FlowMatchingUnit (training only)."""
+    """Config for the training Trainer."""
 
-    _target_: str = "unit.FlowMatchingUnit"
+    _target_: str = "train.Trainer"
     model: ModelConfig = field(default_factory=ModelConfig)
     flow: FlowConfig = field(default_factory=FlowConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
@@ -163,7 +163,7 @@ class NanoFlowConfig:
 
 @dataclass
 class DataLoaderConfig:
-    _target_: str = "unit.build_dataloader"
+    _target_: str = "datasets.build_dataloader"
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
     batch_size: int = 128
     num_workers: int = 0
@@ -172,9 +172,9 @@ class DataLoaderConfig:
 
 @dataclass
 class InferenceUnitConfig:
-    """Config for InferenceUnit."""
+    """Config for the inference FlowSampler."""
 
-    _target_: str = "unit.InferenceUnit"
+    _target_: str = "inference.FlowSampler"
     model: ModelConfig = field(default_factory=ModelConfig)
     checkpoint: Optional[str] = None
     num_steps: int = 100
@@ -194,7 +194,7 @@ class ClassSampler:
 
 @dataclass
 class InferenceConfig:
-    infer_unit: InferenceUnitConfig
+    sampler: InferenceUnitConfig
     n_samples: int = 64
     save_path: Optional[str] = None
     class_sampler: Optional[ClassSampler] = None
@@ -203,8 +203,8 @@ class InferenceConfig:
 
 @dataclass
 class Config:
-    # Shared — populated by Hydra config groups, referenced by units via interpolation
-    train_unit: Optional[NanoFlowConfig] = None
+    # Shared — populated by Hydra config groups, referenced by recipes via interpolation
+    trainer: Optional[NanoFlowConfig] = None
     train_loader: Optional[DataLoaderConfig] = None
     val_loader: Optional[DataLoaderConfig] = None
     inference: Optional[InferenceConfig] = None
@@ -217,9 +217,9 @@ class Config:
 def _register() -> None:
     cs = ConfigStore.instance()
     # Config not registered as top-level schema — dataset/model/flow/training
-    # live as top-level Hydra groups referenced via interpolation by the units.
-    cs.store(name="train_unit_schema", node=NanoFlowConfig)
-    cs.store(name="infer_unit_schema", node=InferenceUnitConfig)
+    # live as top-level Hydra groups referenced via interpolation by the recipes.
+    cs.store(name="trainer_schema", node=NanoFlowConfig)
+    cs.store(name="sampler_schema", node=InferenceUnitConfig)
     cs.store(group="dataset", name="moons_schema", node=MoonsDatasetConfig)
     cs.store(group="dataset", name="fashion_schema", node=FashionDatasetConfig)
     cs.store(group="dataset", name="cifar10_schema", node=CifarDatasetConfig)

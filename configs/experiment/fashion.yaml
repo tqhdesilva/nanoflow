@@ -16,6 +16,6 @@ sample_logger:
 inference:
   n_samples: 64
   save_path: fashion_samples.png
-  infer_unit:
+  sampler:
     num_steps: 200
     latent_shape: [1, 28, 28]

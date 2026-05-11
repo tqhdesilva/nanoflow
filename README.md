@@ -5,20 +5,25 @@ Minimal from-scratch flow matching, in the spirit of nanoGPT. Pure PyTorch.
 ## Quickstart
 
 ```bash
-# 2D moons (default — fast, good for debugging)
-uv run python main.py device=mps
+# 2D moons (default, fast, good for debugging)
+uv run python train.py device=mps
 
 # FashionMNIST
-uv run python main.py experiment=fashion device=mps
+uv run python train.py experiment=fashion device=mps
 
 # CIFAR-10
-uv run python main.py experiment=cifar10 device=cuda
+uv run python train.py experiment=cifar10 device=cuda
 ```
 
 Each experiment bundles the right dataset, model, and inference config. Override anything via CLI:
 
 ```bash
-uv run python main.py experiment=cifar10 device=cuda training.epochs=200 training.batch_size=256 save_path=cifar10_samples.png
+uv run python train.py experiment=cifar10 device=cuda training.epochs=200 training.batch_size=256 inference.save_path=cifar10_samples.png
+```
+
+Multi-GPU:
+```bash
+torchrun --nproc_per_node=N train.py experiment=cifar10 device=cuda distributed=ddp
 ```
 
 ## Experiments
@@ -35,21 +40,21 @@ Configs use [Hydra](https://hydra.cc/) with structured config validation. The ex
 
 Sanity-check the fully materialized config before a run:
 ```bash
-uv run python main.py experiment=cifar10 device=cuda --cfg job
+uv run python train.py experiment=cifar10 device=cuda --cfg job
 ```
 
 ```
 configs/
-  config.yaml                          # top-level (device, save)
+  config.yaml                          # top-level (device, distributed, runs_dir)
   experiment/{moons,fashion,cifar10}   # bundles dataset + model + inference
   training/default.yaml                # epochs, lr, batch_size, etc.
 ```
 
-Key top-level overrides:
+Key overrides:
 - `device={cpu,mps,cuda}` — default: cpu
-- `save={true,false}` — save sample plots (default: false)
 - `training.epochs=N`, `training.lr=X`, `training.batch_size=N`
-- `inference.num_steps=N` — Euler integration steps (default: 100)
+- `inference.save_path=path.png` — write a sample-grid plot
+- `inference.sampler.num_steps=N` — Euler integration steps
 
 ## TensorBoard
 
@@ -61,13 +66,13 @@ Each run logs to `runs/{experiment}_{timestamp}/`.
 
 ## Checkpointing
 
-Checkpoints save every `training.save_every` epochs. Resume with:
+Checkpoints save every `training.save_every` epochs to `runs/{prefix}_{timestamp}/checkpoints/latest.pt`. Resume with:
 
 ```bash
-uv run python main.py training.resume=checkpoints/{run_name}_latest.pt
+uv run python train.py training.resume=runs/{prefix}_{timestamp}/checkpoints/latest.pt
 ```
 
-SIGTERM (e.g. RunPod preemption) triggers a checkpoint save before exit.
+SIGTERM (e.g. RunPod preemption) triggers a `preempted.pt` save before exit.
 
 ## Flow matching in brief
 

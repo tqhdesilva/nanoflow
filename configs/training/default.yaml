@@ -16,5 +16,5 @@ grad_clip: 1.0
 # --- EMA (0 = disabled; use 0.9999 for long runs) ---
 ema_decay: 0
 
-# --- Precision (fp32, fp16, bf16) — passed to AutoUnit ---
+# --- Precision (fp32, fp16, bf16) — autocast + GradScaler (fp16 only) ---
 precision: null

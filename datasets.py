@@ -3,9 +3,11 @@
 Each dataset returns (data, label) tuples and exposes a `num_classes` attribute.
 """
 
+import os
+
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
 
 from sklearn.datasets import make_moons
 
@@ -80,3 +82,30 @@ class CifarDataset(Dataset):
 
     def __getitem__(self, idx):
         return self._ds[idx]  # (image, label)
+
+
+def build_dataloader(dataset, batch_size, num_workers, train, **_):
+    """Build a (possibly DDP-distributed) DataLoader.
+
+    `dataset` is a Hydra partial — called here with `train=...`. When WORLD_SIZE>1
+    (set by torchrun), wrap in a DistributedSampler so each rank sees a disjoint shard.
+    """
+    ds = dataset(train=train)
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    rank = int(os.environ.get("RANK", 0))
+    sampler = None
+    shuffle = train
+    if world_size > 1:
+        sampler = DistributedSampler(
+            ds, num_replicas=world_size, rank=rank, shuffle=train
+        )
+        shuffle = False
+    return DataLoader(
+        ds,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        sampler=sampler,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=train,
+    )

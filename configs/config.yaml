@@ -11,22 +11,22 @@ device: cpu
 distributed: null   # null | ddp | fsdp
 runs_dir: runs
 
-train_unit:
-  _target_: unit.FlowMatchingUnit
+trainer:
+  _target_: train.Trainer
   model: ${model}
   flow: ${flow}
   training: ${training}
   distributed: ${distributed}
 
 train_loader:
-  _target_: unit.build_dataloader
+  _target_: datasets.build_dataloader
   dataset: ${dataset}
   batch_size: ${training.batch_size}
   num_workers: ${training.num_workers}
   train: true
 
 val_loader:
-  _target_: unit.build_dataloader
+  _target_: datasets.build_dataloader
   dataset: ${dataset}
   batch_size: ${training.batch_size}
   num_workers: ${training.num_workers}
@@ -35,8 +35,8 @@ val_loader:
 sample_logger: null
 
 inference:
-  infer_unit:
-    _target_: unit.InferenceUnit
+  sampler:
+    _target_: inference.FlowSampler
     model: ${model}
     device: ${device}
     checkpoint: null
