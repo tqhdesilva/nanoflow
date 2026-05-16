@@ -32,9 +32,9 @@ torchrun --nproc_per_node=N train.py experiment=cifar10 device=cuda distributed=
 ## Structure
 
 ```
-train.py          # Hydra entry — Trainer class + training loop + post-train inference
-inference.py      # Hydra entry — FlowSampler class for standalone sampling from a checkpoint
-train_grpo.py     # Hydra entry — Flow-GRPO RL fine-tuning loop
+train.py          # Hydra entry: Trainer class + training loop + post-train inference
+inference.py      # Hydra entry: FlowSampler class for standalone sampling from a checkpoint
+train_grpo.py     # Hydra entry: Flow-GRPO RL fine-tuning loop
 config.py         # Structured config dataclasses (schema validation)
 callbacks.py      # RunDir, Checkpoint, EpochSummary, StepLoss, LRMonitor, SampleLogger
 datasets.py       # MoonsDataset, FashionMNISTDataset, CifarDataset + build_dataloader
@@ -78,7 +78,7 @@ Hydra experiment configs are the primary interface. `experiment=X` sets dataset,
 | `fashion` | FashionMNIST | UNet (small) | 64 | 4 |
 | `cifar10` | CIFAR-10 | UNet (large) | 64 | 4 |
 
-Structured config dataclasses in `config.py` validate all YAML configs at startup — wrong types or extra keys error immediately.
+Structured config dataclasses in `config.py` validate all YAML configs at startup. Wrong types or extra keys error immediately.
 
 Sample PNGs are written when `inference.save_path` is set (each experiment YAML sets one by default).
 
@@ -120,7 +120,7 @@ Loop: outer rollout phase (sample T-step SDE trajectories under `theta_old`, rec
 
 Reward = `log p(target_class = prompt | x_final)` under a frozen Fashion classifier (`rl/classifier.py`). Train the classifier once with `uv run python -m rl.classifier --epochs 5`.
 
-The trainer never imports the SDE sampler directly. It talks to a `RolloutClient` Protocol (`rollout`, `update_weights`); the only impl shipped is `InProcessRolloutClient`. Future transports (subprocess, distributed, Ray, gRPC) are alternate `RolloutClient` impls behind the same interface — see `~/secondbrain/Π/NanoFlow/project-plan.md` "Future scaling: rollout client topologies".
+Rollout generation goes through a `RolloutClient` Protocol (`rollout`, `update_weights`); the only impl shipped is `InProcessRolloutClient`. The trainer does import `recompute_logprobs` from `rl/sde_sampler.py` during the inner update. That is intentional: log-prob recomputation shares the same SDE probability path as rollout, including `_sigma_t`, drift, CFG velocity, transition mean, and Gaussian log prob. A future cleanup may extract the shared transition-kernel logic into `rl/sde_path.py`, but this milestone keeps it with SDE sampling. Future transports (subprocess, distributed, Ray, gRPC) are alternate `RolloutClient` impls behind the same interface. See `~/secondbrain/Π/NanoFlow/project-plan.md` "Future scaling: rollout client topologies".
 
 Smoke-test the loop with one step before a long run:
 ```bash

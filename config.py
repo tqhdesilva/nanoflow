@@ -1,4 +1,4 @@
-"""Structured config schema for NanoFlow — validated by Hydra at startup."""
+"""Structured config schema for NanoFlow. Validated by Hydra at startup."""
 
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -6,7 +6,7 @@ from typing import Any, Optional
 from hydra.core.config_store import ConfigStore
 from omegaconf import MISSING
 
-# ---- dataset group ----
+# Dataset group
 
 
 @dataclass
@@ -35,7 +35,7 @@ class CifarDatasetConfig(DatasetConfig):
     root: str = "./data"
 
 
-# ---- model group ----
+# Model group
 
 
 @dataclass
@@ -102,7 +102,7 @@ class ClassCondUNetCifarConfig(ModelConfig):
     num_classes: int = 10
 
 
-# ---- flow group ----
+# Flow group
 
 
 @dataclass
@@ -115,7 +115,7 @@ class CondOTConfig(FlowConfig):
     _target_: str = "flow.CondOT"
 
 
-# ---- training group ----
+# Training group
 
 
 @dataclass
@@ -135,7 +135,7 @@ class TrainingConfig:
     p_uncond: Optional[float] = None
 
 
-# ---- sampling / inference ----
+# Sampling / inference
 
 
 @dataclass
@@ -147,7 +147,7 @@ class SampleLoggerConfig:
     # TODO should we also add optional class sampler?
 
 
-# ---- unit configs ----
+# Unit configs
 
 
 @dataclass
@@ -187,9 +187,10 @@ class ClassSampler:
     num_classes: int = 10
     guidance_scale: float = 1.0
     probs: Optional[list[float]] = None
+    class_names: Optional[list[str]] = None
 
 
-# ---- top-level ----
+# Top-level
 
 
 @dataclass
@@ -203,7 +204,7 @@ class InferenceConfig:
 
 @dataclass
 class Config:
-    # Shared — populated by Hydra config groups, referenced by recipes via interpolation
+    # Shared config groups, referenced by recipes via interpolation.
     trainer: Optional[NanoFlowConfig] = None
     train_loader: Optional[DataLoaderConfig] = None
     val_loader: Optional[DataLoaderConfig] = None
@@ -214,10 +215,9 @@ class Config:
     runs_dir: str = "runs"
 
 
-# ---- RL / Flow-GRPO ----
+# RL / Flow-GRPO
 
 
-@dataclass
 @dataclass
 class SamplerConfig:
     T_rollout: int = 10
@@ -286,7 +286,7 @@ class GRPOConfig:
 
 def _register() -> None:
     cs = ConfigStore.instance()
-    # Config not registered as top-level schema — dataset/model/flow/training
+    # Config not registered as top-level schema: dataset/model/flow/training.
     # live as top-level Hydra groups referenced via interpolation by the recipes.
     cs.store(name="trainer_schema", node=NanoFlowConfig)
     cs.store(name="sampler_schema", node=InferenceUnitConfig)

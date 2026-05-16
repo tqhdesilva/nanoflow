@@ -1,7 +1,8 @@
 """Flow-GRPO training entry point.
 
-Outer rollout / inner-update loop. Talks only to a `RolloutClient`; never
-imports the SDE sampler directly.
+Outer rollout / inner-update loop. Rollout transport goes through a
+`RolloutClient`. Transition-kernel log-prob recomputation stays with the SDE
+sampler because it shares the same probability-path logic as rollout.
 """
 
 from __future__ import annotations
@@ -16,11 +17,15 @@ import torch.nn as nn
 from omegaconf import OmegaConf
 from torch.nn.utils import clip_grad_norm_
 
-import config as _config  # noqa: F401 — registers structured config schema
+import config as _config  # noqa: F401, registers structured config schema
 from callbacks import CheckpointCallback, RunDirCallback
 from rl.grpo import compute_group_advantage, grpo_loss
 from rl.rollout_client import RolloutClient
 from rl.sde_sampler import recompute_logprobs
+
+
+RATIO_SANITY_ATOL = 1e-4
+KL_SANITY_ATOL = 1e-8
 
 
 def load_seed_policy(model_cfg, checkpoint: str, device: torch.device) -> nn.Module:
@@ -83,7 +88,7 @@ def main(cfg) -> None:
     epoch = 0
 
     def _sigterm(_sig, _frame):
-        print(f"\nSIGTERM caught — saving preempted checkpoint")
+        print(f"\nSIGTERM caught, saving preempted checkpoint")
         _save("preempted")
         sys.exit(0)
 
@@ -114,6 +119,18 @@ def main(cfg) -> None:
                 clip_eps=rl.clip_eps,
                 kl_beta=rl.kl_beta,
             )
+            if inner == 0:
+                ratio_delta = abs(info["ratio_mean"].item() - 1.0)
+                if ratio_delta > RATIO_SANITY_ATOL:
+                    raise RuntimeError(
+                        "fresh rollout sanity check failed: "
+                        f"ratio_mean={info['ratio_mean'].item():.8f}"
+                    )
+                if global_step == 0 and info["kl"].item() > KL_SANITY_ATOL:
+                    raise RuntimeError(
+                        "initial reference sanity check failed: "
+                        f"kl={info['kl'].item():.8e}"
+                    )
             opt.zero_grad(set_to_none=True)
             loss.backward()
             if rl.grad_clip > 0:

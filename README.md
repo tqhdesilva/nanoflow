@@ -36,7 +36,7 @@ torchrun --nproc_per_node=N train.py experiment=cifar10 device=cuda distributed=
 
 ## Config system
 
-Configs use [Hydra](https://hydra.cc/) with structured config validation. The experiment config is the main knob — it sets dataset, model, and inference defaults together.
+Configs use [Hydra](https://hydra.cc/) with structured config validation. The experiment config is the main knob; it sets dataset, model, and inference defaults together.
 
 Sanity-check the fully materialized config before a run:
 ```bash
@@ -51,19 +51,19 @@ configs/
 ```
 
 Key overrides:
-- `device={cpu,mps,cuda}` — default: cpu
+- `device={cpu,mps,cuda}`: default: cpu
 - `training.epochs=N`, `training.lr=X`, `training.batch_size=N`
-- `inference.save_path=path.png` — write a sample-grid plot
-- `inference.sampler.num_steps=N` — Euler integration steps
+- `inference.save_path=path.png`: write a sample-grid plot
+- `inference.sampler.num_steps=N`: Euler integration steps
 
 ## RL fine-tuning (Flow-GRPO)
 
-Fine-tune a CFG checkpoint with [Flow-GRPO](https://github.com/yifan123/flow_grpo) (ODE→SDE conversion, group-relative advantage, clipped IS surrogate, closed-form Gaussian KL to a frozen reference). Single-GPU, plain torch.
+Fine-tune a CFG checkpoint with [Flow-GRPO](https://github.com/yifan123/flow_grpo): ODE to SDE conversion, group-relative advantage, clipped IS surrogate, and closed-form Gaussian KL to a frozen reference. Single-GPU, plain torch.
 
 ```bash
-# 1. Train the reward classifier (small CNN, ~1-2 min on MPS)
+# 1. Train the reward classifier (small CNN, about 1 to 2 min on MPS)
 uv run python -m rl.classifier --epochs 5
-# → runs/reward_models/fashion_classifier.pt
+# writes runs/reward_models/fashion_classifier.pt
 
 # 2. RL fine-tune a CFG-trained Fashion checkpoint
 uv run python train_grpo.py experiment=fashion_grpo \
@@ -78,13 +78,13 @@ uv run python train_grpo.py --cfg job
 ```
 
 Common overrides:
-- `rl_training.G=N` — group size (rollout batch = `batch_size * G`)
-- `rl_training.num_inner=N` — PPO-style inner loop count
+- `rl_training.G=N`: group size (rollout batch = `batch_size * G`)
+- `rl_training.num_inner=N`: PPO-style inner loop count
 - `rl_training.kl_beta=X`, `rl_training.clip_eps=X`
-- `rl_training.T_rollout=N` — SDE steps per rollout (default 10)
-- `rl_training.sigma_a=X` — noise schedule scale (paper default 0.7)
+- `rl_training.sampler.T_rollout=N`: SDE steps per rollout (default 10)
+- `rl_training.sampler.sigma_a=X`: noise schedule scale (paper default 0.7)
 
-Rollout transport is behind a `RolloutClient` Protocol (`rl/rollout_client.py`); the trainer never imports the SDE sampler directly. The only impl shipped is `InProcessRolloutClient`.
+Rollout transport is behind a `RolloutClient` Protocol (`rl/rollout_client.py`). The trainer imports SDE log-prob recomputation directly because it is transition-kernel probability-path logic, not rollout transport.
 
 ## TensorBoard
 

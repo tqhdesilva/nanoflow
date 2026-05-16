@@ -1,6 +1,6 @@
 """Standalone inference: load a checkpoint, run Euler integration, save plots/metrics.
 
-Also re-used by `train.py` for post-train sampling — see `run_inference`.
+Also re-used by `train.py` for post-train sampling. See `run_inference`.
 """
 
 import os
@@ -13,7 +13,7 @@ import yaml
 from omegaconf import OmegaConf
 from torch import Tensor
 
-import config as _config  # noqa: F401 — registers structured config schema
+import config as _config  # noqa: F401, registers structured config schema
 from callbacks import make_run_dir
 
 
@@ -67,17 +67,29 @@ class FlowSampler:
         self.num_steps = num_steps
         self.latent_shape = latent_shape
 
-    @torch.no_grad()
-    def generate(self, n_samples: int, class_sampler=None) -> Tensor:
-        shape = tuple(self.latent_shape) if self.latent_shape else (2,)
-        noise = torch.randn(n_samples, *shape, device=self.device)
+    def sample_labels(self, n_samples: int, class_sampler=None) -> Optional[Tensor]:
         if class_sampler is not None:
             if class_sampler.probs is not None:
                 probs = torch.tensor(class_sampler.probs)
                 labels = torch.multinomial(probs, n_samples, replacement=True)
             else:
-                labels = torch.randint(0, class_sampler.num_classes, (n_samples,))
-            labels = labels.to(self.device)
+                labels = torch.arange(n_samples) % class_sampler.num_classes
+            return labels.to(self.device)
+        return None
+
+    @torch.no_grad()
+    def generate(
+        self,
+        n_samples: int,
+        class_sampler=None,
+        labels: Optional[Tensor] = None,
+    ) -> Tensor:
+        shape = tuple(self.latent_shape) if self.latent_shape else (2,)
+        noise = torch.randn(n_samples, *shape, device=self.device)
+        if class_sampler is not None:
+            labels = labels if labels is not None else self.sample_labels(
+                n_samples, class_sampler
+            )
             return guided_euler_sample(
                 self.module,
                 noise,
@@ -99,7 +111,10 @@ def run_inference(
 
     icfg = cfg.inference
     cs = OmegaConf.select(icfg, "class_sampler", default=None)
-    samples = sampler.generate(icfg.n_samples, class_sampler=cs).cpu()
+    labels = sampler.sample_labels(icfg.n_samples, class_sampler=cs)
+    samples = sampler.generate(icfg.n_samples, class_sampler=cs, labels=labels).cpu()
+    labels_cpu = labels.cpu() if labels is not None else None
+    class_names = list(cs.class_names) if cs is not None and cs.class_names else None
 
     metrics_cfg = OmegaConf.select(icfg, "metrics", default=None)
     if metrics_cfg:
@@ -127,7 +142,13 @@ def run_inference(
                     " (no real data for comparison)"
                 )
         else:
-            plot_image_samples(samples, title, icfg.save_path)
+            plot_image_samples(
+                samples,
+                title,
+                icfg.save_path,
+                labels=labels_cpu,
+                class_names=class_names,
+            )
     else:
         print(
             f"Generated {samples.shape[0]} samples (set save_path to write plot)"

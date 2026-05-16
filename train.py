@@ -1,4 +1,4 @@
-"""NanoFlow — training entry point.
+"""NanoFlow training entry point.
 
 Owns the `Trainer` class (model + optimizer + scheduler + scaler + EMA) and the
 training loop. Hydra-decorated `main` runs training, then (if `cfg.inference` is
@@ -23,7 +23,7 @@ from torch.nn.utils import clip_grad_norm_
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from torch.utils.data import DistributedSampler
 
-import config as _config  # noqa: F401 — registers structured config schema
+import config as _config  # noqa: F401, registers structured config schema
 from callbacks import (
     CheckpointCallback,
     EpochSummaryCallback,
@@ -60,7 +60,7 @@ def setup_device_and_dist(device_type: str, distributed: Optional[str]) -> torch
 
 
 class Trainer:
-    """Flow-matching trainer. Plain PyTorch — no framework dependency."""
+    """Flow-matching trainer. Plain PyTorch with no framework dependency."""
 
     def __init__(
         self,
@@ -147,7 +147,7 @@ class Trainer:
 
     @property
     def eval_model(self) -> nn.Module:
-        """Module used for sampling/eval — EMA if enabled, else live weights."""
+        """Module used for sampling/eval. EMA if enabled, else live weights."""
         if self.ema_model is not None:
             return self.ema_model.module
         return self.raw_module
@@ -350,7 +350,7 @@ def main(cfg) -> None:
 
         def _handler(sig, frame):
             print(
-                f"\nSIGTERM caught — saving preempted checkpoint to "
+                f"\nSIGTERM caught, saving preempted checkpoint to "
                 f"{ckpt_cb.save_path('preempted')}"
             )
             ckpt_cb.save(trainer, "preempted")

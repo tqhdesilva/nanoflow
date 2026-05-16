@@ -1,4 +1,4 @@
-"""Generation metrics — polymorphic, instantiated via Hydra `_target_`.
+"""Generation metrics, polymorphic and instantiated via Hydra `_target_`.
 
 Each metric is a callable taking a `(N, C, H, W)` tensor in `[-1, 1]` and
 returning a result dict that `main.py` aggregates into the run dir.

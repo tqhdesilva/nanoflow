@@ -1,4 +1,4 @@
-"""Noise paths — interpolation and training target.
+"""Noise paths: interpolation and training target.
 
 Swappable interface: CondOT (flow matching) is the default.
 Future paths (DDPM, VP-SDE) implement the same interface.

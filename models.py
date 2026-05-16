@@ -1,4 +1,4 @@
-"""Model architectures — MLP (2D toy), UNet (images)."""
+"""Model architectures: MLP (2D toy), UNet (images)."""
 
 import math
 
@@ -46,9 +46,9 @@ class Block(nn.Module):
 class MLP(nn.Module):
     """
     Takes (x, t) and outputs predicted velocity.
-    x: (B, 2) — 2D point
-    t: (B,)   — time in [0, 1]
-    out: (B, 2) — predicted velocity vector
+    x: (B, 2), 2D point
+    t: (B,), time in [0, 1]
+    out: (B, 2), predicted velocity vector
     """
 
     def __init__(self, hidden_dim=128, num_layers=4, time_dim=32):

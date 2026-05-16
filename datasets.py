@@ -1,4 +1,4 @@
-"""Dataset classes — moons, FashionMNIST, CIFAR-10.
+"""Dataset classes: moons, FashionMNIST, CIFAR-10.
 
 Each dataset returns (data, label) tuples and exposes a `num_classes` attribute.
 """
@@ -87,7 +87,7 @@ class CifarDataset(Dataset):
 def build_dataloader(dataset, batch_size, num_workers, train, **_):
     """Build a (possibly DDP-distributed) DataLoader.
 
-    `dataset` is a Hydra partial — called here with `train=...`. When WORLD_SIZE>1
+    `dataset` is a Hydra partial called here with `train=...`. When WORLD_SIZE>1
     (set by torchrun), wrap in a DistributedSampler so each rank sees a disjoint shard.
     """
     ds = dataset(train=train)

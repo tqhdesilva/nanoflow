@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# RunPod entrypoint — saves artifacts to network volume at /workspace.
+# RunPod entrypoint. Saves artifacts to network volume at /workspace.
 #
 # Usage (single GPU):
 #   ./scripts/run.sh dataset=cifar10 model=unet_cifar device=cuda

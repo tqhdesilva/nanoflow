@@ -1,6 +1,6 @@
 """NanoFlow training callbacks.
 
-Plain-Python callback protocol — each hook takes `trainer` (no framework base class).
+Plain-Python callback protocol. Each hook takes `trainer` with no framework base class.
 Hooks invoked by `Trainer.fit`: on_train_start, on_train_epoch_start, on_train_step_end,
 on_train_epoch_end, on_eval_epoch_start, on_eval_epoch_end, on_train_end.
 """
