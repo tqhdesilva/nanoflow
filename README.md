@@ -56,6 +56,36 @@ Key overrides:
 - `inference.save_path=path.png` — write a sample-grid plot
 - `inference.sampler.num_steps=N` — Euler integration steps
 
+## RL fine-tuning (Flow-GRPO)
+
+Fine-tune a CFG checkpoint with [Flow-GRPO](https://github.com/yifan123/flow_grpo) (ODE→SDE conversion, group-relative advantage, clipped IS surrogate, closed-form Gaussian KL to a frozen reference). Single-GPU, plain torch.
+
+```bash
+# 1. Train the reward classifier (small CNN, ~1-2 min on MPS)
+uv run python -m rl.classifier --epochs 5
+# → runs/reward_models/fashion_classifier.pt
+
+# 2. RL fine-tune a CFG-trained Fashion checkpoint
+uv run python train_grpo.py experiment=fashion_grpo \
+    seed_checkpoint=runs/{fashion_cfg_run}/checkpoints/latest.pt
+```
+
+The reward is `log p(target_class | sample)` under the frozen classifier.
+
+Sanity-check the resolved config before a run:
+```bash
+uv run python train_grpo.py --cfg job
+```
+
+Common overrides:
+- `rl_training.G=N` — group size (rollout batch = `batch_size * G`)
+- `rl_training.num_inner=N` — PPO-style inner loop count
+- `rl_training.kl_beta=X`, `rl_training.clip_eps=X`
+- `rl_training.T_rollout=N` — SDE steps per rollout (default 10)
+- `rl_training.sigma_a=X` — noise schedule scale (paper default 0.7)
+
+Rollout transport is behind a `RolloutClient` Protocol (`rl/rollout_client.py`); the trainer never imports the SDE sampler directly. The only impl shipped is `InProcessRolloutClient`.
+
 ## TensorBoard
 
 ```bash

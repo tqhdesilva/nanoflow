@@ -1,7 +1,7 @@
 """Structured config schema for NanoFlow — validated by Hydra at startup."""
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from hydra.core.config_store import ConfigStore
 from omegaconf import MISSING
@@ -214,6 +214,76 @@ class Config:
     runs_dir: str = "runs"
 
 
+# ---- RL / Flow-GRPO ----
+
+
+@dataclass
+@dataclass
+class SamplerConfig:
+    T_rollout: int = 10
+    sigma_a: float = 0.7
+    t_min: float = 1e-3
+    t_max: float = 0.999
+    guidance_scale: float = 2.0
+
+
+@dataclass
+class RLTrainingConfig:
+    epochs: int = 200
+    batch_size: int = 8
+    G: int = 8
+    num_inner: int = 4
+    lr: float = 1e-5
+    grad_clip: float = 1.0
+    clip_eps: float = 0.2
+    kl_beta: float = 0.04
+    T_inference: int = 40
+    sampler: SamplerConfig = field(default_factory=SamplerConfig)
+    save_every: int = 10
+    log_every: int = 1
+    run_prefix: str = "fashion_grpo"
+    ema_decay: float = 0.0
+    latent_shape: list = field(default_factory=lambda: [1, 28, 28])
+    num_classes: int = 10
+
+
+@dataclass
+class RewardConfig:
+    _target_: str = MISSING
+
+
+@dataclass
+class TargetClassRewardConfig(RewardConfig):
+    _target_: str = "rl.reward.TargetClassReward"
+    classifier_checkpoint: str = MISSING
+    device: str = "mps"
+
+
+@dataclass
+class RolloutClientConfig:
+    _target_: str = MISSING
+
+
+@dataclass
+class InProcessRolloutClientConfig(RolloutClientConfig):
+    _target_: str = "rl.rollout_client.InProcessRolloutClient"
+    device: str = "mps"
+    latent_shape: list = field(default_factory=lambda: [1, 28, 28])
+    sampler: SamplerConfig = field(default_factory=SamplerConfig)
+
+
+@dataclass
+class GRPOConfig:
+    rl_training: RLTrainingConfig = field(default_factory=RLTrainingConfig)
+    reward: Any = MISSING
+    rollout_client: Any = MISSING
+    model: Any = MISSING
+    seed_checkpoint: str = MISSING
+    device: str = "mps"
+    distributed: Optional[str] = None
+    runs_dir: str = "runs"
+
+
 def _register() -> None:
     cs = ConfigStore.instance()
     # Config not registered as top-level schema — dataset/model/flow/training
@@ -239,6 +309,15 @@ def _register() -> None:
     )
     cs.store(group="flow", name="condot_schema", node=CondOTConfig)
     cs.store(group="training", name="default_schema", node=TrainingConfig)
+    cs.store(group="rl_training", name="default_schema", node=RLTrainingConfig)
+    cs.store(
+        group="reward", name="fashion_classifier_schema",
+        node=TargetClassRewardConfig,
+    )
+    cs.store(
+        group="rollout_client", name="in_process_schema",
+        node=InProcessRolloutClientConfig,
+    )
 
 
 _register()

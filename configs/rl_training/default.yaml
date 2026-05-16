@@ -1,0 +1,25 @@
+# @package rl_training
+epochs: 200
+batch_size: 8
+G: 8
+num_inner: 4
+lr: 1.0e-5
+grad_clip: 1.0
+clip_eps: 0.2
+kl_beta: 0.04
+
+T_inference: 40
+sampler:
+  T_rollout: 10
+  sigma_a: 0.7
+  t_min: 1.0e-3
+  t_max: 0.999
+  guidance_scale: 2.0
+
+save_every: 10
+log_every: 1
+run_prefix: fashion_grpo
+ema_decay: 0.0
+
+latent_shape: [1, 28, 28]
+num_classes: 10

@@ -1,0 +1,5 @@
+# @package rollout_client
+_target_: rl.rollout_client.InProcessRolloutClient
+device: ${device}
+latent_shape: ${rl_training.latent_shape}
+sampler: ${rl_training.sampler}

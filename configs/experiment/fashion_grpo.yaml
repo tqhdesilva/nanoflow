@@ -1,0 +1,14 @@
+# @package _global_
+defaults:
+  - override /dataset: fashion
+  - override /model: classcond_unet_fashion
+  - override /reward: fashion_classifier
+
+rl_training:
+  batch_size: 8
+  G: 8
+  epochs: 200
+  latent_shape: [1, 28, 28]
+  num_classes: 10
+
+seed_checkpoint: runs/fashion_20260512_150206/checkpoints/latest.pt

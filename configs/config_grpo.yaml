@@ -1,0 +1,21 @@
+defaults:
+  - dataset: fashion
+  - model: classcond_unet_fashion
+  - flow: condot
+  - rl_training: default
+  - reward: fashion_classifier
+  - rollout_client: in_process
+  - experiment: fashion_grpo
+  - _self_
+
+device: mps
+distributed: null
+runs_dir: runs
+
+seed_checkpoint: runs/fashion_20260512_150206/checkpoints/latest.pt
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: outputs/${now:%Y-%m-%d_%H-%M-%S}

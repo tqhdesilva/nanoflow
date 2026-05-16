@@ -1,0 +1,4 @@
+# @package reward
+_target_: rl.reward.TargetClassReward
+classifier_checkpoint: runs/reward_models/fashion_classifier.pt
+device: ${device}
