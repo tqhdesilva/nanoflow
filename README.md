@@ -68,9 +68,15 @@ uv run python -m rl.classifier --epochs 5
 # 2. RL fine-tune a CFG-trained Fashion checkpoint
 uv run python train_grpo.py experiment=fashion_grpo \
     seed_checkpoint=runs/{fashion_cfg_run}/checkpoints/latest.pt
+
+# Diagnostic reward: ignore prompts and reinforce Trouser class
+uv run python train_grpo.py experiment=fashion_grpo_trouser device=mps
 ```
 
 The reward is `log p(target_class | sample)` under the frozen classifier.
+`experiment=fashion_grpo_trouser` instead rewards `log p(Trouser | sample)`
+for every prompt, which is useful for checking whether GRPO can move the policy
+when the seed model is already prompt-aligned.
 
 Sanity-check the resolved config before a run:
 ```bash

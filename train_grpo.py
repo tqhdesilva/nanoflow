@@ -100,7 +100,7 @@ def main(cfg) -> None:
         prompts = sample_prompts(rl.batch_size, rl.G, rl.num_classes, device)
         traj = rollout_client.rollout(prompts)
         rewards = reward_fn(traj.xs[-1], traj.prompts)
-        advantage = compute_group_advantage(rewards, rl.G)
+        advantage = compute_group_advantage(rewards, rl.G) * rl.advantage_scale
 
         # Inner update (PPO-style)
         loss, info = None, None

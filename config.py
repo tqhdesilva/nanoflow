@@ -237,6 +237,7 @@ class RLTrainingConfig:
     grad_clip: float = 1.0
     clip_eps: float = 0.2
     kl_beta: float = 0.04
+    advantage_scale: float = 1.0
     T_inference: int = 40
     sampler: SamplerConfig = field(default_factory=SamplerConfig)
     save_every: int = 10

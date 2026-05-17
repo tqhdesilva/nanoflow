@@ -7,6 +7,7 @@ lr: 1.0e-5
 grad_clip: 1.0
 clip_eps: 0.2
 kl_beta: 0.04
+advantage_scale: 1.0
 
 T_inference: 40
 sampler:

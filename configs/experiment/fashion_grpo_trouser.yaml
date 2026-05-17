@@ -1,0 +1,20 @@
+# @package _global_
+defaults:
+  - override /dataset: fashion
+  - override /model: classcond_unet_fashion
+  - override /reward: fashion_trouser
+
+rl_training:
+  batch_size: 4
+  G: 32
+  epochs: 200
+  num_inner: 12
+  lr: 1.0e-4
+  clip_eps: 1.0
+  kl_beta: 0.001
+  advantage_scale: 20.0
+  latent_shape: [1, 28, 28]
+  num_classes: 10
+  run_prefix: fashion_grpo_trouser
+
+seed_checkpoint: runs/fashion_20260512_150206/checkpoints/latest.pt
