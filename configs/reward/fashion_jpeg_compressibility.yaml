@@ -1,0 +1,6 @@
+# @package reward
+_target_: rl.reward.JpegCompressibilityReward
+quality: 75
+optimize: false
+progressive: false
+subsampling: null

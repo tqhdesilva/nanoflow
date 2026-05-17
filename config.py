@@ -261,6 +261,15 @@ class TargetClassRewardConfig(RewardConfig):
 
 
 @dataclass
+class JpegCompressibilityRewardConfig(RewardConfig):
+    _target_: str = "rl.reward.JpegCompressibilityReward"
+    quality: int = 75
+    optimize: bool = False
+    progressive: bool = False
+    subsampling: Optional[int | str] = None
+
+
+@dataclass
 class RolloutClientConfig:
     _target_: str = MISSING
 
@@ -314,6 +323,10 @@ def _register() -> None:
     cs.store(
         group="reward", name="fashion_classifier_schema",
         node=TargetClassRewardConfig,
+    )
+    cs.store(
+        group="reward", name="jpeg_compressibility_schema",
+        node=JpegCompressibilityRewardConfig,
     )
     cs.store(
         group="rollout_client", name="in_process_schema",

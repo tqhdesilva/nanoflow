@@ -1,0 +1,10 @@
+# @package _global_
+inference:
+  metrics:
+    - _target_: metrics.JpegCompressibilityMetric
+      quality: 75
+      optimize: false
+      progressive: false
+      subsampling: null
+      include_png: true
+      include_diagnostics: true

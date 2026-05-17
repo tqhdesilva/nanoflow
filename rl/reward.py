@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 
 from rl.classifier import load_classifier
+from rl.compression import jpeg_bpp_for_sample
 
 
 class RewardFn(Protocol):
@@ -60,3 +61,35 @@ class FixedClassReward:
             device=self.device,
         )
         return log_probs.gather(1, targets).squeeze(1)
+
+
+class JpegCompressibilityReward:
+    """Reward = negative JPEG bits-per-pixel for each final sample."""
+
+    def __init__(
+        self,
+        quality: int = 75,
+        optimize: bool = False,
+        progressive: bool = False,
+        subsampling: int | str | None = None,
+    ):
+        self.quality = quality
+        self.optimize = optimize
+        self.progressive = progressive
+        self.subsampling = subsampling
+
+    @torch.no_grad()
+    def __call__(
+        self, x_final: torch.Tensor, prompts: torch.Tensor
+    ) -> torch.Tensor:
+        rewards = [
+            -jpeg_bpp_for_sample(
+                sample,
+                quality=self.quality,
+                optimize=self.optimize,
+                progressive=self.progressive,
+                subsampling=self.subsampling,
+            )
+            for sample in x_final.detach().cpu()
+        ]
+        return torch.tensor(rewards, dtype=x_final.dtype, device=x_final.device)
