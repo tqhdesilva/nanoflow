@@ -63,6 +63,30 @@ Recorded run directory:
 runs/fashion_grpo_jpeg_moderate_long_20260516_213332
 ```
 
+## Evaluation / metrics override
+
+The training command above sets the **GRPO reward** to JPEG compressibility via `experiment=fashion_grpo_jpeg`. Inference metrics are separate: the top-level `configs/config.yaml` defaults to `metrics: none`, so JPEG/PNG bpp metrics are enabled by explicitly passing the metrics override:
+
+```bash
+uv run python inference.py \
+  experiment=fashion_cfg \
+  metrics=jpeg_compressibility \
+  inference.sampler.checkpoint=runs/fashion_grpo_jpeg_moderate_long_20260516_213332/checkpoints/latest.pt \
+  inference.n_samples=64 \
+  inference.save_path=runs/fashion_grpo_jpeg_moderate_long_20260516_213332/eval_compare/inference_grid.png \
+  device=mps
+```
+
+Relevant code/config pointers:
+
+- Training reward config: `configs/experiment/fashion_grpo_jpeg.yaml` overrides `/reward: fashion_jpeg_compressibility`.
+- Reward implementation: `rl.reward.JpegCompressibilityReward`, using helpers in `rl/compression.py`.
+- Metric config: `configs/metrics/jpeg_compressibility.yaml`.
+- Metric implementation: `metrics.JpegCompressibilityMetric`.
+- Metric instantiation: `inference.py` reads `cfg.inference.metrics` and instantiates each metric with Hydra.
+
+Note: the fixed-grid comparison below was produced by a small evaluation script that instantiated `JpegCompressibilityMetric` directly, but the equivalent standalone inference path is the `metrics=jpeg_compressibility` override above.
+
 ## Visual comparison
 
 The following grids use the same fixed labels/random seed. The fine-tuned samples are visibly smoother, with less texture/detail than the seed samples. This is consistent with the compression objective: JPEG can encode smoother images with fewer bits.
