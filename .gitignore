@@ -26,3 +26,4 @@ wandb/
 data/**
 runs/**
 .pi*
+!experiments/**/*.png
