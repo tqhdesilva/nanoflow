@@ -1,0 +1,6 @@
+# @package _global_
+defaults:
+  - override /dataset: imagenet256
+
+training:
+  run_prefix: imagenet256_cfg

@@ -129,7 +129,9 @@ class CheckpointCallback:
 class EpochSummaryCallback:
     """Rank-0 console summary + epoch-level scalars (loss, val/loss, throughput)."""
 
-    def __init__(self, writer: Optional[SummaryWriter], total_epochs: int, batch_size: int):
+    def __init__(
+        self, writer: Optional[SummaryWriter], total_epochs: int, batch_size: int
+    ):
         self.rank = _rank()
         self.writer = writer
         self.total_epochs = total_epochs
@@ -241,7 +243,9 @@ class SampleLoggerCallback:
         was_training = sample_model.training
         sample_model.eval()
         with torch.no_grad():
-            noise = torch.randn(self.n_samples, *self.latent_shape, device=trainer.device)
+            noise = torch.randn(
+                self.n_samples, *self.latent_shape, device=trainer.device
+            )
             if self.p_uncond is not None and hasattr(sample_model, "num_classes"):
                 labels = torch.randint(
                     0,

@@ -169,7 +169,10 @@ class Trainer:
         if self.training.p_uncond is not None:
             cond = batch[1].clone()
             if self.training.p_uncond > 0:
-                mask = torch.rand(cond.size(0), device=cond.device) < self.training.p_uncond
+                mask = (
+                    torch.rand(cond.size(0), device=cond.device)
+                    < self.training.p_uncond
+                )
                 cond[mask] = self.raw_module.null_token
             v_pred = self.module(xt, t.view(-1), cond)
         else:
@@ -264,7 +267,9 @@ class Trainer:
             "model_state": self.raw_module.state_dict(),
             "optimizer_state": self.optimizer.state_dict(),
             "lr_scheduler_state": (
-                self.lr_scheduler.state_dict() if self.lr_scheduler is not None else None
+                self.lr_scheduler.state_dict()
+                if self.lr_scheduler is not None
+                else None
             ),
             "train_progress": {
                 "num_epochs_completed": self.epoch,

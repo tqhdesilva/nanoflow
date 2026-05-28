@@ -40,8 +40,11 @@ class InProcessRolloutClient:
         self.model.eval()
         try:
             return sde_rollout(
-                self.model, prompts.to(self.device),
-                self.sampler, self.latent_shape, self.device,
+                self.model,
+                prompts.to(self.device),
+                self.sampler,
+                self.latent_shape,
+                self.device,
             )
         finally:
             if was_training:

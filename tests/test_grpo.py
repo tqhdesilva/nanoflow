@@ -90,9 +90,7 @@ class GRPOTest(unittest.TestCase):
         new_logprobs, new_mus = recompute_logprobs(
             self.policy, traj, self.sampler, no_grad=False
         )
-        _, ref_mus = recompute_logprobs(
-            ref_policy, traj, self.sampler, no_grad=True
-        )
+        _, ref_mus = recompute_logprobs(ref_policy, traj, self.sampler, no_grad=True)
         self.assertFalse(ref_mus.requires_grad)
 
         loss, _ = grpo_loss(

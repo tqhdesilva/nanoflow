@@ -45,13 +45,19 @@ def load_classifier(checkpoint: str, device: torch.device) -> FashionCNN:
     return model
 
 
-def train(epochs: int = 5, batch_size: int = 128, lr: float = 1e-3,
-          out_path: str = "runs/reward_models/fashion_classifier.pt",
-          device: str = "mps") -> None:
+def train(
+    epochs: int = 5,
+    batch_size: int = 128,
+    lr: float = 1e-3,
+    out_path: str = "runs/reward_models/fashion_classifier.pt",
+    device: str = "mps",
+) -> None:
     dev = torch.device(device)
     train_ds = FashionMNISTDataset(train=True)
     val_ds = FashionMNISTDataset(train=False)
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=2)
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True, num_workers=2
+    )
     val_loader = DataLoader(val_ds, batch_size=512, shuffle=False, num_workers=2)
 
     model = FashionCNN().to(dev)
@@ -88,7 +94,9 @@ def main() -> None:
     ap.add_argument("--epochs", type=int, default=5)
     ap.add_argument("--batch-size", type=int, default=128)
     ap.add_argument("--lr", type=float, default=1e-3)
-    ap.add_argument("--out", type=str, default="runs/reward_models/fashion_classifier.pt")
+    ap.add_argument(
+        "--out", type=str, default="runs/reward_models/fashion_classifier.pt"
+    )
     ap.add_argument("--device", type=str, default="mps")
     args = ap.parse_args()
     train(args.epochs, args.batch_size, args.lr, args.out, args.device)

@@ -3,7 +3,11 @@ import unittest
 import torch
 
 from metrics import JpegCompressibilityMetric
-from rl.compression import jpeg_bpp_for_sample, jpeg_bytes_for_sample, sample_to_uint8_pil
+from rl.compression import (
+    jpeg_bpp_for_sample,
+    jpeg_bytes_for_sample,
+    sample_to_uint8_pil,
+)
 from rl.reward import JpegCompressibilityReward
 
 
@@ -40,8 +44,12 @@ class CompressionRewardTest(unittest.TestCase):
         gen = torch.Generator().manual_seed(456)
         sample = torch.rand(1, 28, 28, generator=gen) * 2 - 1
 
-        first = jpeg_bytes_for_sample(sample, quality=75, optimize=False, progressive=False)
-        second = jpeg_bytes_for_sample(sample, quality=75, optimize=False, progressive=False)
+        first = jpeg_bytes_for_sample(
+            sample, quality=75, optimize=False, progressive=False
+        )
+        second = jpeg_bytes_for_sample(
+            sample, quality=75, optimize=False, progressive=False
+        )
 
         self.assertEqual(first, second)
 

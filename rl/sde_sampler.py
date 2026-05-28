@@ -19,16 +19,18 @@ from config import SamplerConfig
 
 @dataclass
 class RolloutBatch:
-    xs: torch.Tensor          # [T+1, B, C, H, W] trajectory
-    actions: torch.Tensor     # [T, B, C, H, W] iid N(0, I) samples used at each step
+    xs: torch.Tensor  # [T+1, B, C, H, W] trajectory
+    actions: torch.Tensor  # [T, B, C, H, W] iid N(0, I) samples used at each step
     log_probs_old: torch.Tensor  # [T, B]
-    means: torch.Tensor       # [T, B, C, H, W] mu_k under theta_old
-    stds: torch.Tensor        # [T] sigma_k_step (data-independent)
-    prompts: torch.Tensor     # [B]
-    ts: torch.Tensor          # [T+1] timestep grid
+    means: torch.Tensor  # [T, B, C, H, W] mu_k under theta_old
+    stds: torch.Tensor  # [T] sigma_k_step (data-independent)
+    prompts: torch.Tensor  # [B]
+    ts: torch.Tensor  # [T+1] timestep grid
 
 
-def _make_grid(t_min: float, t_max: float, T: int, device: torch.device) -> torch.Tensor:
+def _make_grid(
+    t_min: float, t_max: float, T: int, device: torch.device
+) -> torch.Tensor:
     return torch.linspace(t_min, t_max, T + 1, device=device)
 
 
@@ -38,8 +40,11 @@ def _sigma_t(t: torch.Tensor, sigma_a: float) -> torch.Tensor:
 
 
 def cfg_velocity(
-    model: nn.Module, x: torch.Tensor, t_scalar: torch.Tensor,
-    cond: torch.Tensor, guidance_scale: float,
+    model: nn.Module,
+    x: torch.Tensor,
+    t_scalar: torch.Tensor,
+    cond: torch.Tensor,
+    guidance_scale: float,
 ) -> torch.Tensor:
     """CFG-mixed velocity: v_uncond + g * (v_cond - v_uncond).
 
@@ -53,7 +58,9 @@ def cfg_velocity(
 
 
 def _gaussian_logprob(
-    x: torch.Tensor, mu: torch.Tensor, sigma: torch.Tensor,
+    x: torch.Tensor,
+    mu: torch.Tensor,
+    sigma: torch.Tensor,
 ) -> torch.Tensor:
     """Isotropic Gaussian log-prob, summed over non-batch dims.
 

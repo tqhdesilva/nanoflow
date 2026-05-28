@@ -23,7 +23,6 @@ from rl.grpo import compute_group_advantage, grpo_loss
 from rl.rollout_client import RolloutClient
 from rl.sde_sampler import recompute_logprobs
 
-
 RATIO_SANITY_ATOL = 1e-4
 KL_SANITY_ATOL = 1e-8
 

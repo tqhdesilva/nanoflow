@@ -24,18 +24,18 @@ def gaussian_kl_mu(
     """
     T, B = mu_new.shape[:2]
     diff = (mu_new - mu_ref).view(T, B, -1)
-    sq = (diff * diff).sum(dim=-1)            # [T, B]
+    sq = (diff * diff).sum(dim=-1)  # [T, B]
     var = (sigma_step * sigma_step).view(T, 1)
     return (sq / (2.0 * var)).mean()
 
 
 def grpo_loss(
-    new_logprobs: torch.Tensor,    # [T, B]
-    old_logprobs: torch.Tensor,    # [T, B]
-    new_mus: torch.Tensor,         # [T, B, ...]
-    ref_mus: torch.Tensor,         # [T, B, ...]
-    sigma_step: torch.Tensor,      # [T]
-    advantage: torch.Tensor,       # [B]
+    new_logprobs: torch.Tensor,  # [T, B]
+    old_logprobs: torch.Tensor,  # [T, B]
+    new_mus: torch.Tensor,  # [T, B, ...]
+    ref_mus: torch.Tensor,  # [T, B, ...]
+    sigma_step: torch.Tensor,  # [T]
+    advantage: torch.Tensor,  # [B]
     clip_eps: float,
     kl_beta: float,
 ) -> tuple[torch.Tensor, dict]:

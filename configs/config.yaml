@@ -24,6 +24,9 @@ train_loader:
   batch_size: ${training.batch_size}
   num_workers: ${training.num_workers}
   train: true
+  pin_memory: true
+  persistent_workers: false
+  prefetch_factor: 2
 
 val_loader:
   _target_: datasets.build_dataloader
@@ -31,6 +34,9 @@ val_loader:
   batch_size: ${training.batch_size}
   num_workers: ${training.num_workers}
   train: false
+  pin_memory: true
+  persistent_workers: false
+  prefetch_factor: 2
 
 sample_logger: null
 

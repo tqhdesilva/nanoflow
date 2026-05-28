@@ -35,6 +35,19 @@ class CifarDatasetConfig(DatasetConfig):
     root: str = "./data"
 
 
+@dataclass
+class ImageNet256DatasetConfig(DatasetConfig):
+    _target_: str = "datasets.ImageNet256Dataset"
+    name: str = "imagenet256"
+    root: str = "data/imagenet"
+    image_size: int = 256
+    train_crop: str = "random_resized"
+    val_crop: str = "center"
+    hflip: bool = True
+    lock_path: Optional[str] = None
+    num_classes: int = 1000
+
+
 # Model group
 
 
@@ -168,6 +181,9 @@ class DataLoaderConfig:
     batch_size: int = 128
     num_workers: int = 0
     train: bool = True
+    pin_memory: bool = True
+    persistent_workers: bool = False
+    prefetch_factor: int = 2
 
 
 @dataclass
@@ -303,6 +319,11 @@ def _register() -> None:
     cs.store(group="dataset", name="moons_schema", node=MoonsDatasetConfig)
     cs.store(group="dataset", name="fashion_schema", node=FashionDatasetConfig)
     cs.store(group="dataset", name="cifar10_schema", node=CifarDatasetConfig)
+    cs.store(
+        group="dataset",
+        name="imagenet256_schema",
+        node=ImageNet256DatasetConfig,
+    )
     cs.store(group="model", name="mlp_schema", node=MLPConfig)
     cs.store(group="model", name="unet_fashion_schema", node=UNetFashionConfig)
     cs.store(group="model", name="unet_cifar_schema", node=UNetCifarConfig)
@@ -321,15 +342,18 @@ def _register() -> None:
     cs.store(group="training", name="default_schema", node=TrainingConfig)
     cs.store(group="rl_training", name="default_schema", node=RLTrainingConfig)
     cs.store(
-        group="reward", name="fashion_classifier_schema",
+        group="reward",
+        name="fashion_classifier_schema",
         node=TargetClassRewardConfig,
     )
     cs.store(
-        group="reward", name="jpeg_compressibility_schema",
+        group="reward",
+        name="jpeg_compressibility_schema",
         node=JpegCompressibilityRewardConfig,
     )
     cs.store(
-        group="rollout_client", name="in_process_schema",
+        group="rollout_client",
+        name="in_process_schema",
         node=InProcessRolloutClientConfig,
     )
 

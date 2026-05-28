@@ -87,8 +87,10 @@ class FlowSampler:
         shape = tuple(self.latent_shape) if self.latent_shape else (2,)
         noise = torch.randn(n_samples, *shape, device=self.device)
         if class_sampler is not None:
-            labels = labels if labels is not None else self.sample_labels(
-                n_samples, class_sampler
+            labels = (
+                labels
+                if labels is not None
+                else self.sample_labels(n_samples, class_sampler)
             )
             return guided_euler_sample(
                 self.module,
@@ -150,9 +152,7 @@ def run_inference(
                 class_names=class_names,
             )
     else:
-        print(
-            f"Generated {samples.shape[0]} samples (set save_path to write plot)"
-        )
+        print(f"Generated {samples.shape[0]} samples (set save_path to write plot)")
     return samples
 
 

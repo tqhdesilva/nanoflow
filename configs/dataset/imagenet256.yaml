@@ -1,0 +1,12 @@
+defaults:
+  - imagenet256_schema
+
+_target_: datasets.ImageNet256Dataset
+name: imagenet256
+root: data/imagenet
+image_size: 256
+train_crop: random_resized
+val_crop: center
+hflip: true
+lock_path: null
+num_classes: 1000

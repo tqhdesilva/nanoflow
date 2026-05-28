@@ -12,9 +12,7 @@ from rl.compression import jpeg_bpp_for_sample
 
 
 class RewardFn(Protocol):
-    def __call__(
-        self, x_final: torch.Tensor, prompts: torch.Tensor
-    ) -> torch.Tensor:
+    def __call__(self, x_final: torch.Tensor, prompts: torch.Tensor) -> torch.Tensor:
         """Return [B] reward."""
         ...
 
@@ -27,9 +25,7 @@ class TargetClassReward:
         self.classifier = load_classifier(classifier_checkpoint, self.device)
 
     @torch.no_grad()
-    def __call__(
-        self, x_final: torch.Tensor, prompts: torch.Tensor
-    ) -> torch.Tensor:
+    def __call__(self, x_final: torch.Tensor, prompts: torch.Tensor) -> torch.Tensor:
         logits = self.classifier(x_final.to(self.device))
         log_probs = F.log_softmax(logits, dim=-1)
         return log_probs.gather(1, prompts.to(self.device).view(-1, 1)).squeeze(1)
@@ -49,9 +45,7 @@ class FixedClassReward:
         self.classifier = load_classifier(classifier_checkpoint, self.device)
 
     @torch.no_grad()
-    def __call__(
-        self, x_final: torch.Tensor, prompts: torch.Tensor
-    ) -> torch.Tensor:
+    def __call__(self, x_final: torch.Tensor, prompts: torch.Tensor) -> torch.Tensor:
         logits = self.classifier(x_final.to(self.device))
         log_probs = F.log_softmax(logits, dim=-1)
         targets = torch.full(
@@ -79,9 +73,7 @@ class JpegCompressibilityReward:
         self.subsampling = subsampling
 
     @torch.no_grad()
-    def __call__(
-        self, x_final: torch.Tensor, prompts: torch.Tensor
-    ) -> torch.Tensor:
+    def __call__(self, x_final: torch.Tensor, prompts: torch.Tensor) -> torch.Tensor:
         rewards = [
             -jpeg_bpp_for_sample(
                 sample,
