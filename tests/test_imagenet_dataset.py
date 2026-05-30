@@ -145,10 +145,11 @@ def _ddp_sampler_worker(rank, world_size, port, config_dir, result_queue):
                 "LOCAL_RANK": str(rank),
             }
         )
+        import hydra
         import torch.distributed as dist
         from hydra import compose, initialize_config_dir
         from hydra.core.global_hydra import GlobalHydra
-        import hydra
+
         import datasets as datasets_module
 
         datasets_module.DistributedImageNet = TinyImageNet18

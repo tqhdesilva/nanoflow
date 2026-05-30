@@ -115,6 +115,32 @@ class ClassCondUNetCifarConfig(ModelConfig):
     num_classes: int = 10
 
 
+# VAE group
+
+
+@dataclass
+class VAECacheTransformConfig:
+    _target_: str = "image_transforms.build_cache_transform"
+    image_size: int = 256
+    crop: str = "resize"
+    hflip: bool = False
+
+
+@dataclass
+class VAEConfig:
+    _target_: str = "vae.VAEWrapper"
+    model_id: str = MISSING
+    backend: str = "diffusers_autoencoder_kl"
+    revision: Optional[str] = None
+    subfolder: Optional[str] = None
+    latent_shape: list[int] = field(default_factory=lambda: [4, 32, 32])
+    image_size: int = 256
+    scaling_factor: Optional[float] = None
+    torch_dtype: str = "float32"
+    sample_posterior: bool = False
+    local_files_only: bool = False
+
+
 # Flow group
 
 
@@ -226,6 +252,8 @@ class Config:
     val_loader: Optional[DataLoaderConfig] = None
     inference: Optional[InferenceConfig] = None
     sample_logger: Optional[SampleLoggerConfig] = None
+    vae: Optional[VAEConfig] = None
+    vae_transform: Optional[VAECacheTransformConfig] = None
     device: str = "cpu"
     distributed: Optional[str] = None  # null | ddp | fsdp
     runs_dir: str = "runs"
@@ -337,6 +365,12 @@ def _register() -> None:
         group="model",
         name="classcond_unet_cifar_schema",
         node=ClassCondUNetCifarConfig,
+    )
+    cs.store(group="vae", name="vae_schema", node=VAEConfig)
+    cs.store(
+        group="vae_transform",
+        name="imagenet256_resize_schema",
+        node=VAECacheTransformConfig,
     )
     cs.store(group="flow", name="condot_schema", node=CondOTConfig)
     cs.store(group="training", name="default_schema", node=TrainingConfig)

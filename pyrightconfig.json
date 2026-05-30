@@ -1,0 +1,14 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.10",
+  "typeCheckingMode": "off",
+  "reportPrivateImportUsage": "none",
+  "exclude": [
+    "**/__pycache__",
+    ".venv",
+    "outputs",
+    "runs",
+    "data"
+  ]
+}

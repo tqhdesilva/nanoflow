@@ -33,3 +33,17 @@ Smoke test without uploading:
 source .env
 DRY_RUN=1 scripts/upload_imagenet256_to_gcs.sh
 ```
+
+## VAE smoke test
+
+Stage 2 uses `stabilityai/sd-vae-ft-ema` by default for ImageNet 256 latent work. Run one small encode and decode pass against the local sample folder:
+
+```bash
+uv run python scripts/vae_smoke.py \
+  --image-root /tmp/data/imagenet256-test/ImageNet \
+  --batch-size 1 \
+  --device mps \
+  --output /tmp/nanoflow_vae_smoke.png
+```
+
+The smoke script writes originals and reconstructions to the output grid and prints the encoded latent shape.

@@ -1,0 +1,14 @@
+defaults:
+  - vae_schema
+
+_target_: vae.VAEWrapper
+model_id: CompVis/ldm-vq-8
+backend: ldm_first_stage
+revision: null
+subfolder: null
+latent_shape: [4, 32, 32]
+image_size: 256
+scaling_factor: 1.0
+torch_dtype: float32
+sample_posterior: false
+local_files_only: false

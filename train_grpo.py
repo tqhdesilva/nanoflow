@@ -14,7 +14,6 @@ import sys
 import hydra
 import torch
 import torch.nn as nn
-from omegaconf import OmegaConf
 from torch.nn.utils import clip_grad_norm_
 
 import config as _config  # noqa: F401, registers structured config schema
@@ -87,7 +86,7 @@ def main(cfg) -> None:
     epoch = 0
 
     def _sigterm(_sig, _frame):
-        print(f"\nSIGTERM caught, saving preempted checkpoint")
+        print("\nSIGTERM caught, saving preempted checkpoint")
         _save("preempted")
         sys.exit(0)
 

@@ -114,7 +114,12 @@ def run_inference(
     icfg = cfg.inference
     cs = OmegaConf.select(icfg, "class_sampler", default=None)
     labels = sampler.sample_labels(icfg.n_samples, class_sampler=cs)
-    samples = sampler.generate(icfg.n_samples, class_sampler=cs, labels=labels).cpu()
+    samples = sampler.generate(icfg.n_samples, class_sampler=cs, labels=labels)
+    vae_cfg = OmegaConf.select(cfg, "vae", default=None)
+    if vae_cfg is not None:
+        vae = hydra.utils.instantiate(vae_cfg, device=str(sampler.device))
+        samples = vae.decode(samples)
+    samples = samples.cpu()
     labels_cpu = labels.cpu() if labels is not None else None
     class_names = list(cs.class_names) if cs is not None and cs.class_names else None
 

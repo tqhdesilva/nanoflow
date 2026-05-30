@@ -328,6 +328,7 @@ def _build_callbacks(cfg, run_dir_cb: RunDirCallback) -> list:
                 num_steps=scfg.num_steps,
                 guidance_scale=OmegaConf.select(scfg, "guidance_scale", default=1.0),
                 p_uncond=cfg.training.p_uncond,
+                vae_cfg=OmegaConf.select(cfg, "vae", default=None),
             )
         )
     return callbacks

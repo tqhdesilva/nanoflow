@@ -2,6 +2,8 @@ defaults:
   - dataset: moons
   - model: mlp
   - flow: condot
+  - optional vae: null
+  - optional vae_transform: null
   - training: default
   - experiment: moons
   - metrics: none

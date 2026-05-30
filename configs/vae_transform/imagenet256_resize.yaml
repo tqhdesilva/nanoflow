@@ -1,0 +1,7 @@
+defaults:
+  - imagenet256_resize_schema
+
+_target_: image_transforms.build_cache_transform
+image_size: 256
+crop: resize
+hflip: false

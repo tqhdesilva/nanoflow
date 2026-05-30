@@ -220,6 +220,7 @@ class SampleLoggerCallback:
         num_steps: int,
         guidance_scale: float = 1.0,
         p_uncond: Optional[float] = None,
+        vae_cfg=None,
     ):
         self.rank = _rank()
         self.writer = writer
@@ -229,6 +230,8 @@ class SampleLoggerCallback:
         self.num_steps = num_steps
         self.guidance_scale = guidance_scale
         self.p_uncond = p_uncond
+        self.vae_cfg = vae_cfg
+        self.vae = None
 
     def on_train_epoch_end(self, trainer) -> None:
         if self.rank != 0 or self.writer is None:
@@ -260,5 +263,14 @@ class SampleLoggerCallback:
                 samples = euler_sample(sample_model, noise, self.num_steps)
         if was_training:
             sample_model.train()
+        if self.vae_cfg is not None:
+            if self.vae is None:
+                import hydra
+
+                self.vae = hydra.utils.instantiate(
+                    self.vae_cfg, device=str(trainer.device)
+                )
+            samples = self.vae.decode(samples)
+        samples = samples.detach().cpu()
         grid = make_grid(samples.clamp(-1, 1) * 0.5 + 0.5, nrow=8)
         self.writer.add_image("samples/generated", grid, epoch)

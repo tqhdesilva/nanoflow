@@ -9,9 +9,8 @@ import os
 import numpy as np
 import torch
 import torchvision
-from torch.utils.data import DataLoader, Dataset, DistributedSampler
-
 from sklearn.datasets import make_moons
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
 
 
 def _scale_to_minus1_1(x):
