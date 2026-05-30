@@ -47,3 +47,43 @@ uv run python scripts/vae_smoke.py \
 ```
 
 The smoke script writes originals and reconstructions to the output grid and prints the encoded latent shape.
+
+## Latent cache build and sync
+
+Build a sharded train and validation cache from the local ImageNet 256 tree:
+
+```bash
+uv run python scripts/build_imagenet_latent_cache.py \
+  --image-root /tmp/data/imagenet-256/ImageNet \
+  --output-root /tmp/nanoflow_imagenet256_latents \
+  --device mps \
+  --batch-size 8 \
+  --shard-size 8192 \
+  --compile-vae
+```
+
+For smoke tests, force small shards and small split limits:
+
+```bash
+uv run python scripts/build_imagenet_latent_cache.py \
+  --image-root /tmp/data/imagenet-256/ImageNet \
+  --output-root /tmp/nanoflow_imagenet_latent_smoke \
+  --device mps \
+  --batch-size 1 \
+  --shard-size 1 \
+  --max-samples 2
+```
+
+Upload and hydrate through GCS with plain `gcloud`:
+
+```bash
+source .env
+gcloud storage rsync -r /tmp/nanoflow_imagenet_latent_smoke \
+  gs://${NANOFLOW_GCS_BUCKET}/imagenet256/latent/smoke/stage2.3-cache
+
+gcloud storage rsync -r \
+  gs://${NANOFLOW_GCS_BUCKET}/imagenet256/latent/smoke/stage2.3-cache \
+  /tmp/nanoflow_imagenet_latent_hydrated
+```
+
+The cache metadata is written to `metadata.json`. It records the VAE id, transform, latent shape and dtype, source manifest hashes, split counts, and shard files.
