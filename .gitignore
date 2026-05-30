@@ -27,3 +27,4 @@ data/**
 runs/**
 .pi*
 !experiments/**/*.png
+.env
