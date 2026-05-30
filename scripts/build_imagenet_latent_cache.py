@@ -84,14 +84,16 @@ def main():
     p.add_argument("--prefetch-factor", type=int, default=4)
     p.add_argument("--max-pending-writes", type=int, default=2)
     p.add_argument("--shard-size", type=int, default=8192)
-    p.add_argument("--max-samples", type=int); p.add_argument("--compile-vae", action="store_true")
+    p.add_argument("--max-samples", type=int)
+    p.add_argument("--torch-dtype", default="float32")
+    p.add_argument("--compile-vae", action="store_true")
     args = p.parse_args()
     root, cache = Path(args.image_root), Path(args.output_root)
     transform = build_cache_transform(image_size=256, crop="resize")
-    vae = VAEWrapper(model_id=args.vae, latent_shape=[4, 32, 32], device=args.device)
+    vae = VAEWrapper(model_id=args.vae, latent_shape=[4, 32, 32], device=args.device, torch_dtype=args.torch_dtype)
     if args.compile_vae:
         vae.module = torch.compile(vae.module)
-    meta = {"cache_version": 1, "created_at": datetime.now(timezone.utc).isoformat(), "source_root": os.path.realpath(root), "vae": args.vae, "compiled_vae": args.compile_vae, "transform": {"image_size": 256, "crop": "resize"}, "latent": {"shape": [4, 32, 32], "dtype": "float16"}, "splits": {}}
+    meta = {"cache_version": 1, "created_at": datetime.now(timezone.utc).isoformat(), "source_root": os.path.realpath(root), "vae": args.vae, "vae_torch_dtype": args.torch_dtype, "compiled_vae": args.compile_vae, "transform": {"image_size": 256, "crop": "resize"}, "latent": {"shape": [4, 32, 32], "dtype": "float16"}, "splits": {}}
     with ThreadPoolExecutor(max_workers=1) as writer:
         pending = []
         for split in args.splits:
