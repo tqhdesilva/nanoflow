@@ -58,6 +58,9 @@ uv run python scripts/build_imagenet_latent_cache.py \
   --output-root /tmp/nanoflow_imagenet256_latents \
   --device mps \
   --batch-size 8 \
+  --num-workers 8 \
+  --prefetch-factor 4 \
+  --max-pending-writes 2 \
   --shard-size 8192 \
   --compile-vae
 ```

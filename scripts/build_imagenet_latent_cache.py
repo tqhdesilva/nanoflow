@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse, hashlib, json, os, re, sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
 from PIL import Image
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,14 +46,23 @@ def manifest_hash(samples, root: Path) -> str:
     return h.hexdigest()
 
 
-def load_batch(root: Path, samples, transform):
-    images, labels, paths = [], [], []
-    for path, label in samples:
+class Images(Dataset):
+    def __init__(self, root: Path, samples, transform):
+        self.root, self.samples, self.transform = root, samples, transform
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, i):
+        path, label = self.samples[i]
         with Image.open(path) as im:
-            images.append(transform(im))
-        labels.append(label)
-        paths.append(path.relative_to(root).as_posix())
-    return torch.stack(images), torch.tensor(labels), paths
+            image = self.transform(im)
+        return image, label, path.relative_to(self.root).as_posix()
+
+
+def collate(batch):
+    images, labels, paths = zip(*batch)
+    return torch.stack(images), torch.tensor(labels), list(paths)
 
 
 def save_shard(cache: Path, split: str, shard_id: int, latents, labels, paths):
@@ -69,6 +80,9 @@ def main():
     p.add_argument("--device", default="cpu")
     p.add_argument("--splits", nargs="+", default=["train", "val"])
     p.add_argument("--batch-size", type=int, default=32)
+    p.add_argument("--num-workers", type=int, default=8)
+    p.add_argument("--prefetch-factor", type=int, default=4)
+    p.add_argument("--max-pending-writes", type=int, default=2)
     p.add_argument("--shard-size", type=int, default=8192)
     p.add_argument("--max-samples", type=int); p.add_argument("--compile-vae", action="store_true")
     args = p.parse_args()
@@ -78,19 +92,32 @@ def main():
     if args.compile_vae:
         vae.module = torch.compile(vae.module)
     meta = {"cache_version": 1, "created_at": datetime.now(timezone.utc).isoformat(), "source_root": os.path.realpath(root), "vae": args.vae, "compiled_vae": args.compile_vae, "transform": {"image_size": 256, "crop": "resize"}, "latent": {"shape": [4, 32, 32], "dtype": "float16"}, "splits": {}}
-    for split in args.splits:
-        samples = find_samples(root, split, args.max_samples)
-        shards, zs, ys, paths, shard_id = [], [], [], [], 0
-        for i in tqdm(range(0, len(samples), args.batch_size), desc=split):
-            image, label, source_path = load_batch(root, samples[i : i + args.batch_size], transform)
-            z = vae.encode(image).detach().cpu().half()
-            zs.append(z); ys.append(label); paths += source_path
-            if len(paths) >= args.shard_size:
-                shards.append(save_shard(cache, split, shard_id, zs, ys, paths))
-                zs, ys, paths, shard_id = [], [], [], shard_id + 1
-        if paths:
-            shards.append(save_shard(cache, split, shard_id, zs, ys, paths))
-        meta["splits"][split] = {"count": len(samples), "source_manifest_hash": manifest_hash(samples, root), "shards": shards}
+    with ThreadPoolExecutor(max_workers=1) as writer:
+        pending = []
+        for split in args.splits:
+            samples = find_samples(root, split, args.max_samples)
+            loader_args = {"batch_size": args.batch_size, "num_workers": args.num_workers, "collate_fn": collate, "pin_memory": args.device == "cuda"}
+            if args.num_workers:
+                loader_args.update(prefetch_factor=args.prefetch_factor, persistent_workers=True)
+            loader = DataLoader(Images(root, samples, transform), **loader_args)
+            shards, zs, ys, paths, shard_id = [], [], [], [], 0
+            for image, label, source_path in tqdm(loader, desc=split):
+                z = vae.encode(image).detach().cpu().half()
+                zs.append(z); ys.append(label); paths += source_path
+                if len(paths) >= args.shard_size:
+                    shards.append({"file": f"{split}/shard-{shard_id:05d}.pt", "count": len(paths)})
+                    pending.append(writer.submit(save_shard, cache, split, shard_id, zs, ys, paths))
+                    if len(pending) >= args.max_pending_writes:
+                        pending.pop(0).result()
+                    zs, ys, paths, shard_id = [], [], [], shard_id + 1
+            if paths:
+                shards.append({"file": f"{split}/shard-{shard_id:05d}.pt", "count": len(paths)})
+                pending.append(writer.submit(save_shard, cache, split, shard_id, zs, ys, paths))
+                if len(pending) >= args.max_pending_writes:
+                    pending.pop(0).result()
+            meta["splits"][split] = {"count": len(samples), "source_manifest_hash": manifest_hash(samples, root), "shards": shards}
+        for future in pending:
+            future.result()
     cache.mkdir(parents=True, exist_ok=True)
     (cache / "metadata.json").write_text(json.dumps(meta, indent=2) + "\n")
 
