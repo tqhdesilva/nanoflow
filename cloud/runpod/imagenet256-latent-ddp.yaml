@@ -1,0 +1,31 @@
+name: nf-imagenet-ddp
+
+# Launch from the repository root after the network volume has been hydrated:
+# sky launch -c nf-imagenet-ddp cloud/runpod/imagenet256-latent-ddp.yaml
+
+workdir: .
+
+resources:
+  infra: runpod/CA/CA-MTL-1
+  accelerators: H100:8
+  image_id: docker:runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
+  disk_size: 100
+
+volumes:
+  /workspace: nf-imagenet256
+
+envs:
+  LATENT_CACHE_LINK: /workspace/latent-caches/imagenet256/current
+  RUNS_DIR: /workspace/runs
+  NPROC_PER_NODE: "8"
+  BATCH_SIZE: "64"
+  NUM_WORKERS: "8"
+  PRECISION: bf16
+  CHECKPOINT_EVERY: "1"
+  EVAL_EVERY: "10"
+
+setup: |
+  bash scripts/runpod_setup.sh
+
+run: |
+  bash scripts/runpod_train_imagenet256_latent.sh

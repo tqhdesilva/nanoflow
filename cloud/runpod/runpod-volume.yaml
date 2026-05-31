@@ -1,0 +1,6 @@
+name: nf-imagenet256
+# Replace with the data center where you will run the pods.
+infra: runpod/CA/CA-MTL-1
+type: runpod-network-volume
+# 100Gi is enough for latents plus checkpoints. Use 500Gi if raw images also live here.
+size: 500Gi

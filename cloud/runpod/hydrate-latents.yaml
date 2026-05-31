@@ -1,0 +1,30 @@
+name: nf-imagenet-hydrate
+
+# Launch from the repository root:
+# sky launch -c nf-hydrate cloud/runpod/hydrate-latents.yaml \
+#   --secret GCP_SERVICE_ACCOUNT_JSON_B64="$(base64 -w0 /path/to/gcp-sa.json)"
+
+workdir: .
+
+resources:
+  infra: runpod/CA/CA-MTL-1
+  cpus: 8+
+  memory: 32+
+  image_id: docker:python:3.12-slim-bookworm
+  disk_size: 50
+
+volumes:
+  /workspace: nf-imagenet256
+
+envs:
+  NANOFLOW_GCS_BUCKET: nanoflow
+  LATENT_GCS_PATH: imagenet256/latent/sd-vae-ft-ema-fp16
+  LATENT_CACHE_ROOT: /workspace/latent-caches/imagenet256/sd-vae-ft-ema-fp16
+  LATENT_CACHE_LINK: /workspace/latent-caches/imagenet256/current
+
+setup: |
+  apt-get update
+  apt-get install -y git curl ca-certificates gnupg
+
+run: |
+  bash scripts/runpod_hydrate_imagenet_latents.sh
