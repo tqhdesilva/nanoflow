@@ -119,8 +119,10 @@ class Trainer:
         self.losses: list[float] = []
         self.train_loss_sum = 0.0
         self.train_loss_steps = 0
+        self.train_loss_samples = 0
         self.val_loss_sum = 0.0
         self.val_loss_steps = 0
+        self.val_loss_samples = 0
 
     @staticmethod
     def _build_scheduler(optimizer, training):
@@ -253,8 +255,10 @@ class Trainer:
                 self.optimizer.step()
             if self.ema_model is not None:
                 self.ema_model.update_parameters(self.raw_module)
-            self.train_loss_sum += loss.item()
+            batch_size = int(batch[0].size(0))
+            self.train_loss_sum += loss.item() * batch_size
             self.train_loss_steps += 1
+            self.train_loss_samples += batch_size
             self.step += 1
             for cb in callbacks:
                 if hasattr(cb, "on_train_step_end"):
@@ -276,8 +280,10 @@ class Trainer:
                 enabled=self._amp,
             ):
                 loss, _ = self._compute_loss(batch)
-            self.val_loss_sum += loss.item()
+            batch_size = int(batch[0].size(0))
+            self.val_loss_sum += loss.item() * batch_size
             self.val_loss_steps += 1
+            self.val_loss_samples += batch_size
 
     def state_dict(self) -> dict:
         ckpt = {
@@ -325,12 +331,12 @@ def _build_callbacks(cfg, run_dir_cb: RunDirCallback) -> list:
     )
     callbacks: list = [
         run_dir_cb,
-        ckpt_cb,
         EpochSummaryCallback(
             writer=writer,
             total_epochs=cfg.training.epochs,
             batch_size=cfg.training.batch_size,
         ),
+        ckpt_cb,
         StepLossCallback(writer=writer, log_every=cfg.training.log_every),
         LRMonitorCallback(writer=writer),
     ]

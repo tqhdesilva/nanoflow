@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 import torch
+import torch.distributed as dist
 import yaml
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.tensorboard import SummaryWriter
@@ -23,6 +24,30 @@ from torchvision.utils import make_grid
 
 def _rank() -> int:
     return int(os.environ.get("RANK", 0))
+
+
+def _world_size() -> int:
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_world_size()
+    return int(os.environ.get("WORLD_SIZE", 1))
+
+
+def _dist_ready() -> bool:
+    return dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
+
+
+def _distributed_loss_stats(loss_sum: float, sample_count: int, device: torch.device):
+    if not _dist_ready():
+        return loss_sum, sample_count
+    backend = dist.get_backend()
+    tensor_device = device if backend == "nccl" else torch.device("cpu")
+    stats = torch.tensor(
+        [float(loss_sum), float(sample_count)],
+        dtype=torch.float64,
+        device=tensor_device,
+    )
+    dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+    return float(stats[0].item()), int(stats[1].item())
 
 
 def make_run_dir(runs_dir: str, run_prefix: str) -> Path:
@@ -136,24 +161,38 @@ class EpochSummaryCallback:
         self.writer = writer
         self.total_epochs = total_epochs
         self.batch_size = batch_size
+        self.world_size = _world_size()
+        self.global_batch_size = batch_size * self.world_size
         self._epoch_start = 0.0
+
+    def on_train_start(self, trainer) -> None:
+        if self.rank != 0 or self.writer is None:
+            return
+        print(f"Effective global batch size: {self.global_batch_size}")
+        self.writer.add_scalar("train/effective_batch_size", self.global_batch_size, 0)
 
     def on_train_epoch_start(self, trainer) -> None:
         trainer.train_loss_sum = 0.0
         trainer.train_loss_steps = 0
+        trainer.train_loss_samples = 0
         self._epoch_start = time.perf_counter()
 
     def on_eval_epoch_start(self, trainer) -> None:
         trainer.val_loss_sum = 0.0
         trainer.val_loss_steps = 0
+        trainer.val_loss_samples = 0
 
     def on_train_epoch_end(self, trainer) -> None:
         epoch = trainer.epoch
         epoch_time = time.perf_counter() - self._epoch_start
-        avg_loss = trainer.train_loss_sum / max(trainer.train_loss_steps, 1)
+        loss_sum, sample_count = _distributed_loss_stats(
+            trainer.train_loss_sum,
+            trainer.train_loss_samples,
+            trainer.device,
+        )
+        avg_loss = loss_sum / max(sample_count, 1)
         trainer.losses.append(avg_loss)
-        n = trainer.train_loss_steps * self.batch_size
-        throughput = n / max(epoch_time, 1e-6)
+        throughput = sample_count / max(epoch_time, 1e-6)
         if self.rank != 0 or self.writer is None:
             return
         print(
@@ -165,9 +204,14 @@ class EpochSummaryCallback:
         self.writer.add_scalar("timing/samples_per_sec", throughput, epoch)
 
     def on_eval_epoch_end(self, trainer) -> None:
-        if self.rank != 0 or self.writer is None or trainer.val_loss_steps == 0:
+        loss_sum, sample_count = _distributed_loss_stats(
+            trainer.val_loss_sum,
+            trainer.val_loss_samples,
+            trainer.device,
+        )
+        if self.rank != 0 or self.writer is None or sample_count == 0:
             return
-        val = trainer.val_loss_sum / trainer.val_loss_steps
+        val = loss_sum / sample_count
         epoch = trainer.epoch
         print(f"  eval @ epoch {epoch} | val={val:.4f}")
         self.writer.add_scalar("val/loss", val, epoch)
@@ -186,10 +230,10 @@ class StepLossCallback:
             return
         if trainer.step % self.log_every != 0:
             return
-        if trainer.train_loss_steps > 0:
+        if trainer.train_loss_samples > 0:
             self.writer.add_scalar(
                 "train/loss",
-                trainer.train_loss_sum / trainer.train_loss_steps,
+                trainer.train_loss_sum / trainer.train_loss_samples,
                 trainer.step,
             )
 
