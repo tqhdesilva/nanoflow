@@ -63,6 +63,22 @@ class ImageNetLatentDatasetConfig(DatasetConfig):
     num_classes: int = 1000
 
 
+@dataclass
+class ImageNetLatentMMapDatasetConfig(DatasetConfig):
+    _target_: str = "datasets.ImageNetLatentMMapDataset"
+    name: str = "imagenet256_latent_mmap"
+    cache_root: str = "/tmp/data/imagenet-256-latent-cache/sd-vae-ft-ema-mmap"
+    latent_shape: list[int] = field(default_factory=lambda: [4, 32, 32])
+    latent_dtype: str = "float16"
+    label_dtype: str = "int64"
+    vae: str = "stabilityai/sd-vae-ft-ema"
+    transform_image_size: int = 256
+    transform_crop: str = "resize"
+    storage_format: str = "mmap_npy_v1"
+    cache_version: int = 1
+    num_classes: int = 1000
+
+
 # Model group
 
 
@@ -386,6 +402,11 @@ def _register() -> None:
         group="dataset",
         name="imagenet256_latent_schema",
         node=ImageNetLatentDatasetConfig,
+    )
+    cs.store(
+        group="dataset",
+        name="imagenet256_latent_mmap_schema",
+        node=ImageNetLatentMMapDatasetConfig,
     )
     cs.store(group="model", name="mlp_schema", node=MLPConfig)
     cs.store(group="model", name="unet_fashion_schema", node=UNetFashionConfig)

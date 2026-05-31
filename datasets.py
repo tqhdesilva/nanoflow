@@ -193,7 +193,9 @@ class ImageNetLatentDataset(Dataset):
                 f"Expected cache_version {self.cache_version}, got {self.metadata.get('cache_version')}"
             )
         if self.metadata.get("vae") != self.vae:
-            raise ValueError(f"Expected VAE {self.vae!r}, got {self.metadata.get('vae')!r}")
+            raise ValueError(
+                f"Expected VAE {self.vae!r}, got {self.metadata.get('vae')!r}"
+            )
         latent = self.metadata.get("latent", {})
         if list(latent.get("shape", [])) != self.latent_shape:
             raise ValueError(
@@ -239,7 +241,9 @@ class ImageNetLatentDataset(Dataset):
         required = {"latents", "labels", "source_paths"}
         missing = required - set(shard)
         if missing:
-            raise ValueError(f"Shard {info['rel_path']} missing keys: {sorted(missing)}")
+            raise ValueError(
+                f"Shard {info['rel_path']} missing keys: {sorted(missing)}"
+            )
         if shard["latents"].shape[0] != info["count"]:
             raise ValueError(f"Shard {info['rel_path']} latent count mismatch")
         if list(shard["latents"].shape[1:]) != self.latent_shape:
@@ -263,6 +267,181 @@ class ImageNetLatentDataset(Dataset):
         shard = self._load_shard(shard_idx)
         latent = shard["latents"][local_idx].float()
         label = shard["labels"][local_idx].long()
+        return latent, label
+
+
+def _read_npy_header(path):
+    with open(path, "rb") as f:
+        version = np.lib.format.read_magic(f)
+        if version == (1, 0):
+            return np.lib.format.read_array_header_1_0(f)
+        if version == (2, 0):
+            return np.lib.format.read_array_header_2_0(f)
+        if version == (3, 0):
+            return np.lib.format.read_array_header_2_0(f)
+    raise ValueError(f"Unsupported npy version for {path}: {version}")
+
+
+class ImageNetLatentMMapDataset(Dataset):
+    num_classes = 1000
+
+    def __init__(
+        self,
+        cache_root="/tmp/data/imagenet-256-latent-cache/sd-vae-ft-ema-mmap",
+        train=True,
+        name="imagenet256_latent_mmap",
+        latent_shape=None,
+        latent_dtype="float16",
+        label_dtype="int64",
+        vae="stabilityai/sd-vae-ft-ema",
+        transform_image_size=256,
+        transform_crop="resize",
+        storage_format="mmap_npy_v1",
+        cache_version=1,
+        num_classes=1000,
+    ):
+        if num_classes != self.num_classes:
+            raise ValueError(
+                f"ImageNetLatentMMapDataset num_classes must be {self.num_classes}"
+            )
+        self.name = name
+        self.cache_root = os.fspath(cache_root)
+        self.train = train
+        self.split = "train" if train else "val"
+        self.latent_shape = list(latent_shape or [4, 32, 32])
+        self.latent_dtype = latent_dtype
+        self.label_dtype = label_dtype
+        self.vae = vae
+        self.transform_image_size = transform_image_size
+        self.transform_crop = transform_crop
+        self.storage_format = storage_format
+        self.cache_version = cache_version
+        self.metadata_path = os.path.join(self.cache_root, "metadata.json")
+        with open(self.metadata_path) as f:
+            self.metadata = json.load(f)
+        self._validate_metadata()
+        split_meta = self.metadata["splits"][self.split]
+        files = split_meta.get("files", {})
+        self.latents_path = os.path.join(self.cache_root, files.get("latents", ""))
+        self.labels_path = os.path.join(self.cache_root, files.get("labels", ""))
+        self.source_paths_path = os.path.join(
+            self.cache_root, files.get("source_paths", "")
+        )
+        self._count = int(split_meta["count"])
+        self._latents = None
+        self._labels = None
+        self._source_paths = None
+        self._validate_array_files()
+
+    def _validate_metadata(self):
+        if self.metadata.get("storage_format") != self.storage_format:
+            raise ValueError(
+                f"Expected storage_format {self.storage_format!r}, got {self.metadata.get('storage_format')!r}"
+            )
+        if int(self.metadata.get("cache_version", -1)) != self.cache_version:
+            raise ValueError(
+                f"Expected cache_version {self.cache_version}, got {self.metadata.get('cache_version')}"
+            )
+        if self.metadata.get("vae") != self.vae:
+            raise ValueError(
+                f"Expected VAE {self.vae!r}, got {self.metadata.get('vae')!r}"
+            )
+        latent = self.metadata.get("latent", {})
+        if list(latent.get("shape", [])) != self.latent_shape:
+            raise ValueError(
+                f"Expected latent shape {self.latent_shape}, got {latent.get('shape')}"
+            )
+        if latent.get("dtype") != self.latent_dtype:
+            raise ValueError(
+                f"Expected latent dtype {self.latent_dtype!r}, got {latent.get('dtype')!r}"
+            )
+        transform = self.metadata.get("transform", {})
+        if int(transform.get("image_size", -1)) != self.transform_image_size:
+            raise ValueError(
+                f"Expected transform image_size {self.transform_image_size}, got {transform.get('image_size')}"
+            )
+        if transform.get("crop") != self.transform_crop:
+            raise ValueError(
+                f"Expected transform crop {self.transform_crop!r}, got {transform.get('crop')!r}"
+            )
+        label = self.metadata.get("label", {})
+        if label.get("dtype") != self.label_dtype:
+            raise ValueError(
+                f"Expected label dtype {self.label_dtype!r}, got {label.get('dtype')!r}"
+            )
+        if self.split not in self.metadata.get("splits", {}):
+            raise ValueError(f"Cache metadata has no split {self.split!r}")
+
+    def _validate_array_files(self):
+        for path in [self.latents_path, self.labels_path, self.source_paths_path]:
+            if not path or not os.path.isfile(path):
+                raise FileNotFoundError(f"Missing mmap cache file: {path}")
+        latent_shape, latent_fortran, latent_dtype = _read_npy_header(self.latents_path)
+        expected_shape = (self._count, *self.latent_shape)
+        if tuple(latent_shape) != expected_shape:
+            raise ValueError(
+                f"Expected latents shape {expected_shape}, got {tuple(latent_shape)}"
+            )
+        if latent_fortran:
+            raise ValueError("Latents npy must be C contiguous")
+        if latent_dtype != np.dtype(self.latent_dtype):
+            raise ValueError(
+                f"Expected latents dtype {self.latent_dtype}, got {latent_dtype}"
+            )
+        label_shape, label_fortran, label_dtype = _read_npy_header(self.labels_path)
+        if tuple(label_shape) != (self._count,):
+            raise ValueError(
+                f"Expected labels shape {(self._count,)}, got {tuple(label_shape)}"
+            )
+        if label_fortran:
+            raise ValueError("Labels npy must be C contiguous")
+        if label_dtype != np.dtype(self.label_dtype):
+            raise ValueError(
+                f"Expected labels dtype {self.label_dtype}, got {label_dtype}"
+            )
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_latents"] = None
+        state["_labels"] = None
+        state["_source_paths"] = None
+        return state
+
+    def __len__(self):
+        return self._count
+
+    def _normalize_idx(self, idx):
+        if isinstance(idx, torch.Tensor):
+            idx = idx.item()
+        idx = int(idx)
+        if idx < 0:
+            idx += len(self)
+        if idx < 0 or idx >= len(self):
+            raise IndexError(idx)
+        return idx
+
+    def _ensure_arrays_open(self):
+        if self._latents is None:
+            self._latents = np.load(self.latents_path, mmap_mode="r")
+        if self._labels is None:
+            self._labels = np.load(self.labels_path, mmap_mode="r")
+
+    def source_path(self, idx):
+        idx = self._normalize_idx(idx)
+        if self._source_paths is None:
+            with open(self.source_paths_path) as f:
+                self._source_paths = [line.rstrip("\n") for line in f]
+            if len(self._source_paths) != len(self):
+                raise ValueError(
+                    f"Expected {len(self)} source paths, got {len(self._source_paths)}"
+                )
+        return self._source_paths[idx]
+
+    def __getitem__(self, idx):
+        idx = self._normalize_idx(idx)
+        self._ensure_arrays_open()
+        latent = torch.from_numpy(self._latents[idx].copy()).float()
+        label = torch.tensor(int(self._labels[idx]), dtype=torch.long)
         return latent, label
 
 

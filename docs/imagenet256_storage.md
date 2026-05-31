@@ -89,4 +89,43 @@ gcloud storage rsync -r \
   /tmp/nanoflow_imagenet_latent_hydrated
 ```
 
-The cache metadata is written to `metadata.json`. It records the VAE id, transform, latent shape and dtype, source manifest hashes, split counts, and shard files.
+The sharded cache metadata is written to `metadata.json`. It records the VAE id, transform, latent shape and dtype, source manifest hashes, split counts, and shard files.
+
+## Training mmap latent cache
+
+Convert the sharded `.pt` cache to the mmap training format before production-like random training:
+
+```bash
+uv run python scripts/convert_imagenet_latent_shards_to_mmap.py \
+  --input-root /tmp/data/imagenet-256-latent-cache/sd-vae-ft-ema \
+  --output-root /tmp/data/imagenet-256-latent-cache/sd-vae-ft-ema-mmap
+```
+
+The mmap cache layout is:
+
+```text
+metadata.json
+train/latents.npy
+train/labels.npy
+train/source_paths.txt
+val/latents.npy
+val/labels.npy
+val/source_paths.txt
+```
+
+Within each split, row `i` maps across all three files. `latents.npy[i]` is the `[4, 32, 32]` fp16 latent, `labels.npy[i]` is the numeric ImageNet class id, and line `i` of `source_paths.txt` is the original relative image path. The split is the parent directory, `train` or `val`.
+
+Class ids are the standard ImageNet class indices from `imagenet_class_index.json` in the raw dataset root. That file maps string ids `"0"` through `"999"` to `[wnid, class_name]`. The cache builder infers labels from the WNID in each source filename, then stores the corresponding numeric id in `labels.npy`. To recover the class metadata for a sample, read the numeric label, convert it to a string key, and look it up in `imagenet_class_index.json`.
+
+Upload and hydrate the mmap cache:
+
+```bash
+source .env
+gcloud storage rsync -r \
+  /tmp/data/imagenet-256-latent-cache/sd-vae-ft-ema-mmap \
+  gs://${NANOFLOW_GCS_BUCKET}/imagenet256/latent/sd-vae-ft-ema-mmap
+
+gcloud storage rsync -r \
+  gs://${NANOFLOW_GCS_BUCKET}/imagenet256/latent/sd-vae-ft-ema-mmap \
+  /tmp/data/imagenet-256-latent-cache/sd-vae-ft-ema-mmap
+```

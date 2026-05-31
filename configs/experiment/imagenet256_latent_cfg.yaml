@@ -1,6 +1,6 @@
 # @package _global_
 defaults:
-  - override /dataset: imagenet256_latent
+  - override /dataset: imagenet256_latent_mmap
   - override /model: classcond_unet_imagenet256_latent
   - override /vae: sd_vae_ft_ema
 

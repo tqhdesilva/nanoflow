@@ -7,7 +7,8 @@ import torch
 from torch.utils.data import DataLoader, DistributedSampler, SubsetRandomSampler
 
 import config as _config  # noqa: F401
-from datasets import ImageNetLatentDataset
+from datasets import ImageNetLatentDataset, ImageNetLatentMMapDataset
+from scripts.convert_imagenet_latent_shards_to_mmap import convert_cache
 
 
 def _write_cache(root, train_counts=(3, 2), val_counts=(1,)):
@@ -29,7 +30,9 @@ def _write_cache(root, train_counts=(3, 2), val_counts=(1,)):
             values = torch.arange(offset, offset + count, dtype=torch.float16)
             latents = values.view(count, 1, 1, 1).expand(count, 4, 32, 32).clone()
             labels = torch.arange(offset, offset + count, dtype=torch.long) % 1000
-            paths = [f"{split}/n00000000_{i:08d}.JPEG" for i in range(offset, offset + count)]
+            paths = [
+                f"{split}/n00000000_{i:08d}.JPEG" for i in range(offset, offset + count)
+            ]
             torch.save(
                 {"latents": latents, "labels": labels, "source_paths": paths},
                 os.path.join(root, rel),
@@ -111,6 +114,81 @@ class ImageNetLatentDatasetTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ImageNetLatentDataset(cache_root=tmpdir, vae="other-vae")
 
+    def test_mmap_converter_and_dataset_random_access(self):
+        with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as dst:
+            _write_cache(src, train_counts=(2, 3), val_counts=(2,))
+            convert_cache(src, dst)
+            ds = ImageNetLatentMMapDataset(cache_root=dst, train=True)
+            indices = [4, 0, 2, 1]
+            rows = [ds[i] for i in indices]
+
+            self.assertEqual(len(ds), 5)
+            self.assertEqual(ds.source_path(4), "train/n00000000_00000004.JPEG")
+            self.assertIsNotNone(ds.metadata.get("source_metadata_hash"))
+            self.assertTrue(os.path.exists(os.path.join(dst, "train", "latents.npy")))
+            self.assertTrue(os.path.exists(os.path.join(dst, "train", "labels.npy")))
+
+        for idx, (x, y) in zip(indices, rows):
+            self.assertEqual(tuple(x.shape), (4, 32, 32))
+            self.assertEqual(x.dtype, torch.float32)
+            self.assertEqual(float(x[0, 0, 0]), float(idx))
+            self.assertEqual(y.item(), idx)
+
+    def test_mmap_dataloader_random_batches_work(self):
+        with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as dst:
+            _write_cache(src, train_counts=(3, 3), val_counts=(2,))
+            convert_cache(src, dst)
+            ds = ImageNetLatentMMapDataset(cache_root=dst, train=True)
+            loader = DataLoader(ds, batch_size=4, shuffle=True, num_workers=0)
+            x, y = next(iter(loader))
+
+        self.assertEqual(tuple(x.shape), (4, 4, 32, 32))
+        self.assertEqual(tuple(y.shape), (4,))
+        self.assertTrue(all(0 <= int(v) < 6 for v in y))
+
+    def test_mmap_distributed_sampler_partitions_without_duplicates(self):
+        with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as dst:
+            _write_cache(src, train_counts=(4, 4), val_counts=(1,))
+            convert_cache(src, dst)
+            ds = ImageNetLatentMMapDataset(cache_root=dst, train=True)
+            shards = [
+                list(
+                    DistributedSampler(
+                        ds,
+                        num_replicas=2,
+                        rank=rank,
+                        shuffle=True,
+                        drop_last=True,
+                    )
+                )
+                for rank in range(2)
+            ]
+
+        flat = [idx for shard in shards for idx in shard]
+        self.assertEqual(len(flat), len(set(flat)))
+        self.assertEqual(set(flat), set(range(8)))
+
+    def test_mmap_metadata_validation_fails_loudly(self):
+        with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as dst:
+            _write_cache(src)
+            convert_cache(src, dst)
+            with self.assertRaises(ValueError):
+                ImageNetLatentMMapDataset(cache_root=dst, latent_shape=[8, 16, 16])
+            meta_path = os.path.join(dst, "metadata.json")
+            with open(meta_path) as f:
+                meta = json.load(f)
+            meta["storage_format"] = "other"
+            with open(meta_path, "w") as f:
+                json.dump(meta, f)
+            with self.assertRaises(ValueError):
+                ImageNetLatentMMapDataset(cache_root=dst)
+            meta["storage_format"] = "mmap_npy_v1"
+            meta["label"]["dtype"] = "int32"
+            with open(meta_path, "w") as f:
+                json.dump(meta, f)
+            with self.assertRaises(ValueError):
+                ImageNetLatentMMapDataset(cache_root=dst)
+
     def test_hydra_latent_dataset_config_materializes(self):
         from hydra import compose, initialize_config_dir
         from hydra.core.global_hydra import GlobalHydra
@@ -118,10 +196,32 @@ class ImageNetLatentDatasetTest(unittest.TestCase):
         GlobalHydra.instance().clear()
         config_dir = os.path.abspath("configs")
         with initialize_config_dir(config_dir=config_dir, version_base=None):
-            cfg = compose(config_name="config", overrides=["dataset=imagenet256_latent"])
+            cfg = compose(
+                config_name="config", overrides=["dataset=imagenet256_latent"]
+            )
 
         self.assertEqual(cfg.dataset._target_, "datasets.ImageNetLatentDataset")
         self.assertEqual(cfg.dataset.name, "imagenet256_latent")
+        self.assertEqual(cfg.dataset.latent_shape, [4, 32, 32])
+        self.assertEqual(cfg.dataset.num_classes, 1000)
+
+    def test_hydra_latent_mmap_dataset_config_materializes(self):
+        from hydra import compose, initialize_config_dir
+        from hydra.core.global_hydra import GlobalHydra
+
+        GlobalHydra.instance().clear()
+        config_dir = os.path.abspath("configs")
+        with initialize_config_dir(config_dir=config_dir, version_base=None):
+            cfg = compose(
+                config_name="config", overrides=["dataset=imagenet256_latent_mmap"]
+            )
+
+        self.assertEqual(cfg.dataset._target_, "datasets.ImageNetLatentMMapDataset")
+        self.assertEqual(cfg.dataset.name, "imagenet256_latent_mmap")
+        self.assertEqual(
+            cfg.dataset.cache_root,
+            "/tmp/data/imagenet-256-latent-cache/sd-vae-ft-ema-mmap",
+        )
         self.assertEqual(cfg.dataset.latent_shape, [4, 32, 32])
         self.assertEqual(cfg.dataset.num_classes, 1000)
 
@@ -137,7 +237,7 @@ class ImageNetLatentDatasetTest(unittest.TestCase):
                 overrides=["experiment=imagenet256_latent_cfg"],
             )
 
-        self.assertEqual(cfg.dataset.name, "imagenet256_latent")
+        self.assertEqual(cfg.dataset.name, "imagenet256_latent_mmap")
         self.assertEqual(cfg.model._target_, "models.ClassCondUNet")
         self.assertEqual(cfg.model.in_ch, 4)
         self.assertEqual(cfg.model.num_classes, 1000)

@@ -1,0 +1,15 @@
+defaults:
+  - imagenet256_latent_mmap_schema
+
+_target_: datasets.ImageNetLatentMMapDataset
+name: imagenet256_latent_mmap
+cache_root: /tmp/data/imagenet-256-latent-cache/sd-vae-ft-ema-mmap
+latent_shape: [4, 32, 32]
+latent_dtype: float16
+label_dtype: int64
+vae: stabilityai/sd-vae-ft-ema
+transform_image_size: 256
+transform_crop: resize
+storage_format: mmap_npy_v1
+cache_version: 1
+num_classes: 1000
