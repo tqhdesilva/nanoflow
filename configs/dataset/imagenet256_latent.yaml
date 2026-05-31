@@ -1,0 +1,14 @@
+defaults:
+  - imagenet256_latent_schema
+
+_target_: datasets.ImageNetLatentDataset
+name: imagenet256_latent
+cache_root: /tmp/data/imagenet-256-latent-cache/sd-vae-ft-ema
+latent_shape: [4, 32, 32]
+latent_dtype: float16
+vae: stabilityai/sd-vae-ft-ema
+transform_image_size: 256
+transform_crop: resize
+cache_version: 1
+lru_cache_size: 2
+num_classes: 1000

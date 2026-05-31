@@ -4,7 +4,10 @@ Each dataset returns (data, label) tuples and exposes a `num_classes` attribute.
 """
 
 import fcntl
+import json
 import os
+from bisect import bisect_right
+from collections import OrderedDict
 
 import numpy as np
 import torch
@@ -124,6 +127,143 @@ class CifarDataset(Dataset):
 
     def __getitem__(self, idx):
         return self._ds[idx]  # (image, label)
+
+
+class ImageNetLatentDataset(Dataset):
+    num_classes = 1000
+
+    def __init__(
+        self,
+        cache_root="/tmp/data/imagenet-256-latent-cache/sd-vae-ft-ema",
+        train=True,
+        name="imagenet256_latent",
+        latent_shape=None,
+        latent_dtype="float16",
+        vae="stabilityai/sd-vae-ft-ema",
+        transform_image_size=256,
+        transform_crop="resize",
+        cache_version=1,
+        lru_cache_size=2,
+        num_classes=1000,
+    ):
+        if num_classes != self.num_classes:
+            raise ValueError(
+                f"ImageNetLatentDataset num_classes must be {self.num_classes}"
+            )
+        if lru_cache_size < 1:
+            raise ValueError("lru_cache_size must be at least 1")
+        self.name = name
+        self.cache_root = os.fspath(cache_root)
+        self.train = train
+        self.split = "train" if train else "val"
+        self.latent_shape = list(latent_shape or [4, 32, 32])
+        self.latent_dtype = latent_dtype
+        self.vae = vae
+        self.transform_image_size = transform_image_size
+        self.transform_crop = transform_crop
+        self.cache_version = cache_version
+        self.lru_cache_size = lru_cache_size
+        self._shard_cache = OrderedDict()
+        self.metadata_path = os.path.join(self.cache_root, "metadata.json")
+        with open(self.metadata_path) as f:
+            self.metadata = json.load(f)
+        self._validate_metadata()
+        split_meta = self.metadata["splits"][self.split]
+        self.shards = []
+        self._offsets = []
+        offset = 0
+        for shard in split_meta["shards"]:
+            count = int(shard["count"])
+            rel_path = shard["file"]
+            path = os.path.join(self.cache_root, rel_path)
+            if not os.path.exists(path):
+                raise FileNotFoundError(f"Missing latent shard: {path}")
+            self._offsets.append(offset)
+            self.shards.append({"path": path, "rel_path": rel_path, "count": count})
+            offset += count
+        self._count = offset
+        if self._count != int(split_meta["count"]):
+            raise ValueError(
+                f"Shard counts sum to {self._count}, metadata count is {split_meta['count']}"
+            )
+
+    def _validate_metadata(self):
+        if int(self.metadata.get("cache_version", -1)) != self.cache_version:
+            raise ValueError(
+                f"Expected cache_version {self.cache_version}, got {self.metadata.get('cache_version')}"
+            )
+        if self.metadata.get("vae") != self.vae:
+            raise ValueError(f"Expected VAE {self.vae!r}, got {self.metadata.get('vae')!r}")
+        latent = self.metadata.get("latent", {})
+        if list(latent.get("shape", [])) != self.latent_shape:
+            raise ValueError(
+                f"Expected latent shape {self.latent_shape}, got {latent.get('shape')}"
+            )
+        if latent.get("dtype") != self.latent_dtype:
+            raise ValueError(
+                f"Expected latent dtype {self.latent_dtype!r}, got {latent.get('dtype')!r}"
+            )
+        transform = self.metadata.get("transform", {})
+        if int(transform.get("image_size", -1)) != self.transform_image_size:
+            raise ValueError(
+                f"Expected transform image_size {self.transform_image_size}, got {transform.get('image_size')}"
+            )
+        if transform.get("crop") != self.transform_crop:
+            raise ValueError(
+                f"Expected transform crop {self.transform_crop!r}, got {transform.get('crop')!r}"
+            )
+        if self.split not in self.metadata.get("splits", {}):
+            raise ValueError(f"Cache metadata has no split {self.split!r}")
+
+    def __len__(self):
+        return self._count
+
+    def _locate(self, idx):
+        if isinstance(idx, torch.Tensor):
+            idx = idx.item()
+        idx = int(idx)
+        if idx < 0:
+            idx += len(self)
+        if idx < 0 or idx >= len(self):
+            raise IndexError(idx)
+        shard_idx = bisect_right(self._offsets, idx) - 1
+        return shard_idx, idx - self._offsets[shard_idx]
+
+    def _load_shard(self, shard_idx):
+        if shard_idx in self._shard_cache:
+            shard = self._shard_cache.pop(shard_idx)
+            self._shard_cache[shard_idx] = shard
+            return shard
+        info = self.shards[shard_idx]
+        shard = torch.load(info["path"], map_location="cpu")
+        required = {"latents", "labels", "source_paths"}
+        missing = required - set(shard)
+        if missing:
+            raise ValueError(f"Shard {info['rel_path']} missing keys: {sorted(missing)}")
+        if shard["latents"].shape[0] != info["count"]:
+            raise ValueError(f"Shard {info['rel_path']} latent count mismatch")
+        if list(shard["latents"].shape[1:]) != self.latent_shape:
+            raise ValueError(f"Shard {info['rel_path']} latent shape mismatch")
+        if shard["labels"].shape[0] != info["count"]:
+            raise ValueError(f"Shard {info['rel_path']} label count mismatch")
+        if len(shard["source_paths"]) != info["count"]:
+            raise ValueError(f"Shard {info['rel_path']} source path count mismatch")
+        self._shard_cache[shard_idx] = shard
+        while len(self._shard_cache) > self.lru_cache_size:
+            self._shard_cache.popitem(last=False)
+        return shard
+
+    def source_path(self, idx):
+        shard_idx, local_idx = self._locate(idx)
+        shard = self._load_shard(shard_idx)
+        return shard["source_paths"][local_idx]
+
+    def __getitem__(self, idx):
+        shard_idx, local_idx = self._locate(idx)
+        shard = self._load_shard(shard_idx)
+        latent = shard["latents"][local_idx].float()
+        label = shard["labels"][local_idx].long()
+        return latent, label
 
 
 class ImageNet256Dataset(Dataset):
