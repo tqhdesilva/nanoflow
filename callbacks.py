@@ -84,20 +84,20 @@ class RunDirCallback:
 class CheckpointCallback:
     """Save model + optimizer + scheduler + EMA + scaler + train_progress.
 
-    Saves every `save_every` epochs and at end of training. On `on_train_start`,
-    restores from `resume` path if provided. `save_path(name)` is exposed so a
-    SIGTERM handler can write `preempted.pt`.
+    Saves every `checkpoint_every` epochs and at end of training. On
+    `on_train_start`, restores from `resume` path if provided. `save_path(name)`
+    is exposed so a SIGTERM handler can write `preempted.pt`.
     """
 
     def __init__(
         self,
         ckpt_dir: Path,
-        save_every: int,
+        checkpoint_every: int,
         resume: Optional[str] = None,
     ):
         self.rank = _rank()
         self.ckpt_dir = ckpt_dir
-        self.save_every = save_every
+        self.checkpoint_every = checkpoint_every
         self.resume = resume
 
     def save_path(self, name: str = "latest") -> Path:
@@ -119,7 +119,7 @@ class CheckpointCallback:
 
     def on_train_epoch_end(self, trainer) -> None:
         epoch = trainer.epoch
-        if epoch % self.save_every == 0:
+        if self.checkpoint_every > 0 and epoch % self.checkpoint_every == 0:
             self.save(trainer, "latest")
 
     def on_train_end(self, trainer) -> None:
@@ -209,12 +209,12 @@ class LRMonitorCallback:
 
 
 class SampleLoggerCallback:
-    """Rank-0: every `save_every` epochs, generate samples and log a TB image grid."""
+    """Rank-0: periodically generate samples and log a TB image grid."""
 
     def __init__(
         self,
         writer: Optional[SummaryWriter],
-        save_every: int,
+        every: int,
         latent_shape: list,
         n_samples: int,
         num_steps: int,
@@ -224,7 +224,7 @@ class SampleLoggerCallback:
     ):
         self.rank = _rank()
         self.writer = writer
-        self.save_every = save_every
+        self.every = every
         self.latent_shape = tuple(latent_shape)
         self.n_samples = n_samples
         self.num_steps = num_steps
@@ -237,7 +237,7 @@ class SampleLoggerCallback:
         if self.rank != 0 or self.writer is None:
             return
         epoch = trainer.epoch
-        if epoch % self.save_every != 0:
+        if self.every <= 0 or epoch % self.every != 0:
             return
 
         from inference import euler_sample, guided_euler_sample

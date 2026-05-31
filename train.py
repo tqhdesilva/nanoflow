@@ -105,6 +105,9 @@ class Trainer:
         else:
             self.ema_model = None
 
+        if training.max_steps is not None and training.max_steps <= 0:
+            raise ValueError("training.max_steps must be positive or null")
+
         self._amp, self._amp_dtype = self._resolve_precision(training.precision)
         if training.precision == "fp16" and device.type == "cuda":
             self.scaler: Optional[torch.amp.GradScaler] = torch.amp.GradScaler("cuda")
@@ -186,17 +189,20 @@ class Trainer:
             if hasattr(cb, "on_train_start"):
                 cb.on_train_start(self)
         try:
-            while self.epoch < self.training.epochs:
+            while self.epoch < self.training.epochs and not self._reached_max_steps():
                 for cb in callbacks:
                     if hasattr(cb, "on_train_epoch_start"):
                         cb.on_train_epoch_start(self)
-                self._train_epoch(train_loader, callbacks)
+                reached_max_steps = self._train_epoch(train_loader, callbacks)
                 self.epoch += 1
                 for cb in callbacks:
                     if hasattr(cb, "on_train_epoch_end"):
                         cb.on_train_epoch_end(self)
 
-                if self.epoch % self.training.save_every == 0:
+                if (
+                    self.training.eval_every > 0
+                    and self.epoch % self.training.eval_every == 0
+                ):
                     for cb in callbacks:
                         if hasattr(cb, "on_eval_epoch_start"):
                             cb.on_eval_epoch_start(self)
@@ -207,16 +213,24 @@ class Trainer:
 
                 if self.lr_scheduler is not None:
                     self.lr_scheduler.step()
+                if reached_max_steps:
+                    break
         finally:
             for cb in callbacks:
                 if hasattr(cb, "on_train_end"):
                     cb.on_train_end(self)
 
-    def _train_epoch(self, loader, callbacks) -> None:
+    def _reached_max_steps(self) -> bool:
+        max_steps = self.training.max_steps
+        return max_steps is not None and self.step >= max_steps
+
+    def _train_epoch(self, loader, callbacks) -> bool:
         self.module.train()
         if isinstance(loader.sampler, DistributedSampler):
             loader.sampler.set_epoch(self.epoch)
         for batch in loader:
+            if self._reached_max_steps():
+                return True
             batch = self._to_device(batch)
             self.optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(
@@ -245,6 +259,9 @@ class Trainer:
             for cb in callbacks:
                 if hasattr(cb, "on_train_step_end"):
                     cb.on_train_step_end(self)
+            if self._reached_max_steps():
+                return True
+        return False
 
     @torch.no_grad()
     def _eval_epoch(self, loader) -> None:
@@ -303,7 +320,7 @@ def _build_callbacks(cfg, run_dir_cb: RunDirCallback) -> list:
     writer = run_dir_cb.writer
     ckpt_cb = CheckpointCallback(
         ckpt_dir=run_dir_cb.ckpt_dir,
-        save_every=cfg.training.save_every,
+        checkpoint_every=cfg.training.checkpoint_every,
         resume=cfg.training.resume,
     )
     callbacks: list = [
@@ -322,7 +339,7 @@ def _build_callbacks(cfg, run_dir_cb: RunDirCallback) -> list:
         callbacks.append(
             SampleLoggerCallback(
                 writer=writer,
-                save_every=cfg.training.save_every,
+                every=cfg.training.eval_every,
                 latent_shape=list(scfg.latent_shape),
                 n_samples=scfg.n_samples,
                 num_steps=scfg.num_steps,

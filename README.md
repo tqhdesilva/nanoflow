@@ -102,7 +102,7 @@ Each run logs to `runs/{experiment}_{timestamp}/`.
 
 ## Checkpointing
 
-Checkpoints save every `training.save_every` epochs to `runs/{prefix}_{timestamp}/checkpoints/latest.pt`. Resume with:
+Checkpoints save every `training.checkpoint_every` epochs to `runs/{prefix}_{timestamp}/checkpoints/latest.pt`. Validation and sample logging run every `training.eval_every` epochs. Resume with:
 
 ```bash
 uv run python train.py training.resume=runs/{prefix}_{timestamp}/checkpoints/latest.pt

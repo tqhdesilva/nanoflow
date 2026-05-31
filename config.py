@@ -189,7 +189,11 @@ class TrainingConfig:
     batch_size: int = 128
     lr: float = 1e-3
     warmup_epochs: int = 0
-    save_every: int = 10
+    # Epoch-based cadences. Set to 0 to disable periodic checkpointing or eval.
+    checkpoint_every: int = 10
+    eval_every: int = 10
+    # Optional optimizer-step cap for smoke tests. None means train by epochs.
+    max_steps: Optional[int] = None
     resume: Optional[str] = None
     run_prefix: str = "${dataset.name}"
     log_every: int = 50

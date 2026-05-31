@@ -5,7 +5,11 @@ epochs: 100
 batch_size: 128
 lr: 1.0e-3
 warmup_epochs: 0
-save_every: 10
+# Epoch-based cadences. Set to 0 to disable periodic checkpointing or eval.
+checkpoint_every: 10
+eval_every: 10
+# Optional optimizer-step cap for smoke tests. null means train by epochs.
+max_steps: null
 resume: null
 run_prefix: ${dataset.name}
 

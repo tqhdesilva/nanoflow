@@ -98,7 +98,7 @@ runs/{prefix}_{timestamp}/
   metadata.yaml         # resolved config + git info (commit, branch, dirty, diff)
 ```
 
-Checkpoints saved every `training.save_every` epochs. SIGTERM saves `preempted.pt`.
+Checkpoints saved every `training.checkpoint_every` epochs. Validation and sample logging run every `training.eval_every` epochs. SIGTERM saves `preempted.pt`.
 Resume: `training.resume=runs/.../checkpoints/latest.pt`.
 
 ## Inference
