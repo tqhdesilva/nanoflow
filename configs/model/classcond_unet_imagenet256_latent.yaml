@@ -1,0 +1,10 @@
+defaults:
+  - classcond_unet_imagenet256_latent_schema
+
+_target_: models.ClassCondUNet
+in_ch: 4
+base_ch: 128
+depth: 4
+time_dim: 512
+use_attn: true
+num_classes: 1000

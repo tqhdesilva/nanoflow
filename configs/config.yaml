@@ -5,9 +5,9 @@ defaults:
   - optional vae: null
   - optional vae_transform: null
   - training: default
+  - _self_
   - experiment: moons
   - metrics: none
-  - _self_
 
 device: cpu
 distributed: null   # null | ddp | fsdp

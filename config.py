@@ -130,6 +130,17 @@ class ClassCondUNetCifarConfig(ModelConfig):
     num_classes: int = 10
 
 
+@dataclass
+class ClassCondUNetImageNet256LatentConfig(ModelConfig):
+    _target_: str = "models.ClassCondUNet"
+    in_ch: int = 4
+    base_ch: int = 128
+    depth: int = 4
+    time_dim: int = 512
+    use_attn: bool = True
+    num_classes: int = 1000
+
+
 # VAE group
 
 
@@ -385,6 +396,11 @@ def _register() -> None:
         group="model",
         name="classcond_unet_cifar_schema",
         node=ClassCondUNetCifarConfig,
+    )
+    cs.store(
+        group="model",
+        name="classcond_unet_imagenet256_latent_schema",
+        node=ClassCondUNetImageNet256LatentConfig,
     )
     cs.store(group="vae", name="vae_schema", node=VAEConfig)
     cs.store(

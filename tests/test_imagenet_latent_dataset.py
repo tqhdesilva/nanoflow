@@ -125,6 +125,28 @@ class ImageNetLatentDatasetTest(unittest.TestCase):
         self.assertEqual(cfg.dataset.latent_shape, [4, 32, 32])
         self.assertEqual(cfg.dataset.num_classes, 1000)
 
+    def test_hydra_latent_imagenet_experiment_config_materializes(self):
+        from hydra import compose, initialize_config_dir
+        from hydra.core.global_hydra import GlobalHydra
+
+        GlobalHydra.instance().clear()
+        config_dir = os.path.abspath("configs")
+        with initialize_config_dir(config_dir=config_dir, version_base=None):
+            cfg = compose(
+                config_name="config",
+                overrides=["experiment=imagenet256_latent_cfg"],
+            )
+
+        self.assertEqual(cfg.dataset.name, "imagenet256_latent")
+        self.assertEqual(cfg.model._target_, "models.ClassCondUNet")
+        self.assertEqual(cfg.model.in_ch, 4)
+        self.assertEqual(cfg.model.num_classes, 1000)
+        self.assertEqual(cfg.training.p_uncond, 0.1)
+        self.assertEqual(cfg.sample_logger.latent_shape, [4, 32, 32])
+        self.assertEqual(cfg.inference.sampler.latent_shape, [4, 32, 32])
+        self.assertEqual(cfg.inference.class_sampler.num_classes, 1000)
+        self.assertEqual(cfg.vae.model_id, "stabilityai/sd-vae-ft-ema")
+
 
 if __name__ == "__main__":
     unittest.main()
