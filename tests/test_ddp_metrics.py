@@ -45,7 +45,6 @@ def _metric_worker(rank, world_size, port, result_queue):
             epoch=1,
             device=torch.device("cpu"),
             last_train_loss=1.0 if rank == 0 else 2.0,
-            train_batch_losses=[1.0] if rank == 0 else [2.0],
             train_loss_sum=2.0 if rank == 0 else 6.0,
             train_loss_samples=2 if rank == 0 else 3,
             train_loss_steps=1,

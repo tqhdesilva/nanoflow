@@ -8,6 +8,7 @@ training:
   run_prefix: imagenet256_latent_cfg
   batch_size: 64
   epochs: 100
+  lr: 5.0e-4
   warmup_epochs: 2
   checkpoint_every: 1
   eval_every: 10

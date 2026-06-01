@@ -7,6 +7,7 @@ set) runs post-train sampling via `inference.run_inference`.
 
 from __future__ import annotations
 
+import math
 import os
 import signal
 import sys
@@ -94,7 +95,7 @@ class Trainer:
             raise ValueError(f"Unknown distributed strategy: {distributed!r}")
 
         self.optimizer = torch.optim.Adam(self.raw_module.parameters(), lr=training.lr)
-        self.lr_scheduler = self._build_scheduler(self.optimizer, training)
+        self.lr_scheduler = None
 
         ema_decay = getattr(training, "ema_decay", 0) or 0
         if ema_decay > 0:
@@ -117,32 +118,29 @@ class Trainer:
         self.epoch = 0
         self.step = 0
         self.losses: list[float] = []
-        self.last_train_loss = 0.0
-        self.train_batch_losses: list[float] = []
-        self.train_loss_sum = 0.0
-        self.train_loss_steps = 0
-        self.train_loss_samples = 0
-        self.val_loss_sum = 0.0
-        self.val_loss_steps = 0
-        self.val_loss_samples = 0
+        self._reset_train_epoch_metrics()
+        self._reset_val_epoch_metrics()
 
     @staticmethod
-    def _build_scheduler(optimizer, training):
-        warmup = getattr(training, "warmup_epochs", 0)
-        if warmup <= 0:
+    def _build_scheduler(optimizer, training, steps_per_epoch: int):
+        warmup_epochs = getattr(training, "warmup_epochs", 0)
+        if warmup_epochs <= 0:
             return None
-        return torch.optim.lr_scheduler.SequentialLR(
-            optimizer,
-            [
-                torch.optim.lr_scheduler.LinearLR(
-                    optimizer, start_factor=1e-3, total_iters=warmup
-                ),
-                torch.optim.lr_scheduler.CosineAnnealingLR(
-                    optimizer, T_max=training.epochs - warmup
-                ),
-            ],
-            milestones=[warmup],
-        )
+        total_steps = training.epochs * steps_per_epoch
+        if total_steps <= 0:
+            return None
+        warmup_steps = min(warmup_epochs * steps_per_epoch, total_steps)
+        start_factor = 1e-3
+
+        def lr_lambda(step: int) -> float:
+            if warmup_steps > 0 and step < warmup_steps:
+                progress = step / max(warmup_steps, 1)
+                return start_factor + (1.0 - start_factor) * progress
+            progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
+            progress = min(max(progress, 0.0), 1.0)
+            return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 
     @staticmethod
     def _resolve_precision(precision: Optional[str]):
@@ -151,6 +149,17 @@ class Trainer:
         if precision == "bf16":
             return True, torch.bfloat16
         return False, None
+
+    def _reset_train_epoch_metrics(self) -> None:
+        self.last_train_loss = 0.0
+        self.train_loss_sum = 0.0
+        self.train_loss_steps = 0
+        self.train_loss_samples = 0
+
+    def _reset_val_epoch_metrics(self) -> None:
+        self.val_loss_sum = 0.0
+        self.val_loss_steps = 0
+        self.val_loss_samples = 0
 
     @property
     def eval_model(self) -> nn.Module:
@@ -189,6 +198,12 @@ class Trainer:
 
     def fit(self, train_loader, val_loader, callbacks=None) -> None:
         callbacks = callbacks or []
+        if self.lr_scheduler is None:
+            self.lr_scheduler = self._build_scheduler(
+                self.optimizer,
+                self.training,
+                steps_per_epoch=len(train_loader),
+            )
         for cb in callbacks:
             if hasattr(cb, "on_train_start"):
                 cb.on_train_start(self)
@@ -215,8 +230,6 @@ class Trainer:
                         if hasattr(cb, "on_eval_epoch_end"):
                             cb.on_eval_epoch_end(self)
 
-                if self.lr_scheduler is not None:
-                    self.lr_scheduler.step()
                 if reached_max_steps:
                     break
         finally:
@@ -229,6 +242,7 @@ class Trainer:
         return max_steps is not None and self.step >= max_steps
 
     def _train_epoch(self, loader, callbacks) -> bool:
+        self._reset_train_epoch_metrics()
         self.module.train()
         if isinstance(loader.sampler, DistributedSampler):
             loader.sampler.set_epoch(self.epoch)
@@ -259,11 +273,12 @@ class Trainer:
                 self.ema_model.update_parameters(self.raw_module)
             batch_size = int(batch[0].size(0))
             self.last_train_loss = loss.item()
-            self.train_batch_losses.append(self.last_train_loss)
             self.train_loss_sum += self.last_train_loss * batch_size
             self.train_loss_steps += 1
             self.train_loss_samples += batch_size
             self.step += 1
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step()
             for cb in callbacks:
                 if hasattr(cb, "on_train_step_end"):
                     cb.on_train_step_end(self)
@@ -273,6 +288,7 @@ class Trainer:
 
     @torch.no_grad()
     def _eval_epoch(self, loader) -> None:
+        self._reset_val_epoch_metrics()
         self.module.eval()
         if isinstance(loader.sampler, DistributedSampler):
             loader.sampler.set_epoch(self.epoch)
@@ -342,7 +358,7 @@ def _build_callbacks(cfg, run_dir_cb: RunDirCallback) -> list:
         ),
         ckpt_cb,
         StepLossCallback(writer=writer, log_every=cfg.training.log_every),
-        LRMonitorCallback(writer=writer),
+        LRMonitorCallback(writer=writer, log_every=cfg.training.log_every),
     ]
     if cfg.get("sample_logger") is not None:
         scfg = cfg.sample_logger
