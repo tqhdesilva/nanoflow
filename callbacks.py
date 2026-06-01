@@ -50,6 +50,23 @@ def _distributed_loss_stats(loss_sum: float, sample_count: int, device: torch.de
     return float(stats[0].item()), int(stats[1].item())
 
 
+def _distributed_batch_loss_stats(losses: list[float]):
+    all_losses = [float(loss) for loss in losses]
+    if _dist_ready():
+        gathered = [None for _ in range(dist.get_world_size())]
+        dist.all_gather_object(gathered, all_losses)
+        all_losses = [loss for rank_losses in gathered for loss in rank_losses]
+    if not all_losses:
+        return None
+    all_losses.sort()
+    p95_idx = min(int(0.95 * (len(all_losses) - 1)), len(all_losses) - 1)
+    return {
+        "min": all_losses[0],
+        "p95": all_losses[p95_idx],
+        "max": all_losses[-1],
+    }
+
+
 def make_run_dir(runs_dir: str, run_prefix: str) -> Path:
     """Create `runs/{prefix}_{timestamp}/` and return its path."""
     run_id = f"{run_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -172,6 +189,8 @@ class EpochSummaryCallback:
         self.writer.add_scalar("train/effective_batch_size", self.global_batch_size, 0)
 
     def on_train_epoch_start(self, trainer) -> None:
+        trainer.last_train_loss = 0.0
+        trainer.train_batch_losses = []
         trainer.train_loss_sum = 0.0
         trainer.train_loss_steps = 0
         trainer.train_loss_samples = 0
@@ -191,6 +210,7 @@ class EpochSummaryCallback:
             trainer.device,
         )
         avg_loss = loss_sum / max(sample_count, 1)
+        batch_stats = _distributed_batch_loss_stats(trainer.train_batch_losses)
         trainer.losses.append(avg_loss)
         throughput = sample_count / max(epoch_time, 1e-6)
         if self.rank != 0 or self.writer is None:
@@ -200,6 +220,10 @@ class EpochSummaryCallback:
             f"{throughput:.0f} sam/s | {epoch_time:.1f}s"
         )
         self.writer.add_scalar("train/epoch_loss", avg_loss, epoch)
+        if batch_stats is not None:
+            self.writer.add_scalar("train/batch_loss_min", batch_stats["min"], epoch)
+            self.writer.add_scalar("train/batch_loss_p95", batch_stats["p95"], epoch)
+            self.writer.add_scalar("train/batch_loss_max", batch_stats["max"], epoch)
         self.writer.add_scalar("timing/epoch_sec", epoch_time, epoch)
         self.writer.add_scalar("timing/samples_per_sec", throughput, epoch)
 
@@ -230,12 +254,7 @@ class StepLossCallback:
             return
         if trainer.step % self.log_every != 0:
             return
-        if trainer.train_loss_samples > 0:
-            self.writer.add_scalar(
-                "train/loss",
-                trainer.train_loss_sum / trainer.train_loss_samples,
-                trainer.step,
-            )
+        self.writer.add_scalar("train/loss", trainer.last_train_loss, trainer.step)
 
 
 class LRMonitorCallback:
@@ -244,6 +263,12 @@ class LRMonitorCallback:
     def __init__(self, writer: Optional[SummaryWriter]):
         self.rank = _rank()
         self.writer = writer
+
+    def on_train_start(self, trainer) -> None:
+        if self.rank != 0 or self.writer is None or trainer.optimizer is None:
+            return
+        lr = trainer.optimizer.param_groups[0]["lr"]
+        self.writer.add_scalar("train/lr", lr, 0)
 
     def on_train_epoch_end(self, trainer) -> None:
         if self.rank != 0 or self.writer is None or trainer.optimizer is None:

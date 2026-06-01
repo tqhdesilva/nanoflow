@@ -243,6 +243,7 @@ class ImageNetLatentDatasetTest(unittest.TestCase):
         self.assertEqual(cfg.model.num_classes, 1000)
         self.assertEqual(cfg.training.run_prefix, "imagenet256_latent_cfg")
         self.assertEqual(cfg.training.batch_size, 64)
+        self.assertEqual(cfg.training.warmup_epochs, 2)
         self.assertEqual(cfg.training.checkpoint_every, 1)
         self.assertEqual(cfg.training.eval_every, 10)
         self.assertIsNone(cfg.training.max_steps)

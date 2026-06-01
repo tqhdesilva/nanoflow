@@ -41,7 +41,7 @@ def setup_device_and_dist(device_type: str, distributed: Optional[str]) -> torch
         return torch.device("mps")
 
     world_size = int(os.environ.get("WORLD_SIZE", 1))
-    if world_size > 1:
+    if world_size > 1 or distributed == "ddp":
         if distributed != "ddp":
             raise ValueError(
                 f"WORLD_SIZE={world_size} but distributed={distributed!r} "
@@ -117,6 +117,8 @@ class Trainer:
         self.epoch = 0
         self.step = 0
         self.losses: list[float] = []
+        self.last_train_loss = 0.0
+        self.train_batch_losses: list[float] = []
         self.train_loss_sum = 0.0
         self.train_loss_steps = 0
         self.train_loss_samples = 0
@@ -256,7 +258,9 @@ class Trainer:
             if self.ema_model is not None:
                 self.ema_model.update_parameters(self.raw_module)
             batch_size = int(batch[0].size(0))
-            self.train_loss_sum += loss.item() * batch_size
+            self.last_train_loss = loss.item()
+            self.train_batch_losses.append(self.last_train_loss)
+            self.train_loss_sum += self.last_train_loss * batch_size
             self.train_loss_steps += 1
             self.train_loss_samples += batch_size
             self.step += 1
