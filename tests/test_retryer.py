@@ -82,6 +82,32 @@ class RetryerTest(unittest.TestCase):
             retryer.run(broken)
         self.assertEqual(calls, 1)
 
+    def test_run_stops_after_max_retries(self):
+        retryer = self.make_retryer(max_retries=2)
+        calls = 0
+
+        def always_flaky():
+            nonlocal calls
+            calls += 1
+            raise OSError(errno.EIO, "io error")
+
+        with self.assertRaises(OSError):
+            retryer.run(always_flaky)
+        self.assertEqual(calls, 3)
+
+    def test_run_with_zero_max_retries_does_not_retry(self):
+        retryer = self.make_retryer(max_retries=0)
+        calls = 0
+
+        def always_flaky():
+            nonlocal calls
+            calls += 1
+            raise OSError(errno.EIO, "io error")
+
+        with self.assertRaises(OSError):
+            retryer.run(always_flaky)
+        self.assertEqual(calls, 1)
+
     def test_fit_retries_train_end_callback(self):
         retryer = self.make_retryer()
         trainer = Trainer.__new__(Trainer)
