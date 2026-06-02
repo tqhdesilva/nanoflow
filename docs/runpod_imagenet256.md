@@ -33,6 +33,17 @@ The GCS cache source is passed at launch time as a full URI through `DATASET_GCS
 - Optional `RUNPOD_TORCH_PACKAGES` and `RUNPOD_TORCH_INDEX_URL` if the RunPod image driver changes. The default is `torch==2.6.0+cu124 torchvision==0.21.0+cu124` from `https://download.pytorch.org/whl/cu124`.
 - GCP service account credentials with read access to the cache prefix.
 
+## RunPod launch workarounds
+
+Use these checks before every RunPod launch:
+
+1. Match the exact GPU SKU. In EU-NL-1, the working H100 request was `--gpus H100-SXM:2`. A generic `--gpus H100:2` can resolve to `2x_H100_SECURE`, which may fail even when H100 SXM stock is visible in the RunPod UI.
+2. Keep the pod and volume in the same data center. The `nf-imagenet256` network volume is pinned to `runpod/NL/EU-NL-1`, so setup and training must use `--infra runpod/NL/EU-NL-1` unless a new volume is created and hydrated elsewhere.
+3. Keep uv Python installs on the network volume. Set `UV_PYTHON_INSTALL_DIR=/workspace/.cache/uv/python`; otherwise a uv virtualenv can contain symlinks to pod-local Python paths that disappear on the next pod.
+4. Use CUDA 12.4 PyTorch wheels for the current RunPod H100 driver. The scripts install `torch==2.6.0+cu124` and `torchvision==0.21.0+cu124` from `https://download.pytorch.org/whl/cu124`. The default lockfile can otherwise install CUDA 13 wheels, which fail against the current RunPod driver.
+5. Do not rely on SkyPilot autostop for RunPod. The current local SkyPilot CLI reports that autostop is unsupported for RunPod. After a smoke or pilot run, verify artifacts, then run `sky down <cluster> -y`. This preserves the network volume.
+6. When reusing an already launched cluster with `sky exec`, pass the same GPU request, for example `--gpus H100-SXM:2`, so the job receives the two visible GPUs.
+
 ## Choosing a RunPod data center
 
 First confirm SkyPilot can use RunPod:
