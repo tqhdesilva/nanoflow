@@ -1,0 +1,15 @@
+name: nf-docker-cuda-smoke
+
+# Launch with: --image-id docker:<registry>/nanoflow:runpod-cu124
+resources:
+  infra: runpod
+  accelerators: A40:1
+  disk_size: 20
+
+run: |
+  set -euo pipefail
+  cd /app
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi
+  fi
+  python scripts/runpod_cuda_smoke.py

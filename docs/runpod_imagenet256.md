@@ -235,4 +235,4 @@ Training config includes a Hydra-instantiated `retryer` passed into `Trainer`. I
 
 ## Current decision
 
-Do not build a custom image for the first RunPod pass. The first CPU setup task already has to hydrate the latent cache onto the network volume. Keep dependency caches and the project venv on `/workspace` so follow-up pods reuse them.
+Move dependency setup into a custom Docker image for GPU training. Keep the RunPod network volume for latent caches, checkpoints, logs, and optional Hugging Face or torch caches. See `docs/runpod_docker.md` for the image build and managed smoke test.
