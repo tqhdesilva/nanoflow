@@ -15,7 +15,7 @@ WORKSPACE="${WORKSPACE:-/workspace}"
 LATENT_CACHE_LINK="${LATENT_CACHE_LINK:-${DATASET_CACHE_ROOT:-${WORKSPACE}/latent-caches/imagenet256/current}}"
 RUNS_DIR="${RUNS_DIR:-${WORKSPACE}/runs}"
 
-if [ "${SKIP_SETUP:-0}" != "1" ]; then
+if [ "${SKIP_SETUP:-0}" != "1" ] || { [ "${USE_PREPARED_VENV:-1}" = "1" ] && [ -n "${UV_PROJECT_ENVIRONMENT:-}" ] && [ ! -x "${UV_PROJECT_ENVIRONMENT}/bin/python" ]; }; then
   "$ROOT/scripts/runpod_setup.sh"
 fi
 

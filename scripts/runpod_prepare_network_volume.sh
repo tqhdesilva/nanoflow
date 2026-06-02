@@ -9,15 +9,18 @@ NANOFLOW_REPO_REF="${NANOFLOW_REPO_REF:-main}"
 NANOFLOW_REPO_DIR="${NANOFLOW_REPO_DIR:-${WORKSPACE}/nanoflow}"
 NANOFLOW_VENV="${NANOFLOW_VENV:-${WORKSPACE}/.venvs/nanoflow}"
 UV_CACHE_DIR="${UV_CACHE_DIR:-${WORKSPACE}/.cache/uv}"
+UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-${WORKSPACE}/.cache/uv/python}"
 HF_HOME="${HF_HOME:-${WORKSPACE}/.cache/huggingface}"
 TORCH_HOME="${TORCH_HOME:-${WORKSPACE}/.cache/torch}"
 TMPDIR="${NANOFLOW_TMPDIR:-${WORKSPACE}/.tmp}"
 INSTALL_GCLOUD="${INSTALL_GCLOUD:-1}"
 INSTALL_SYSTEM_PACKAGES="${INSTALL_SYSTEM_PACKAGES:-1}"
+RUNPOD_TORCH_INDEX_URL="${RUNPOD_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}"
+RUNPOD_TORCH_PACKAGES="${RUNPOD_TORCH_PACKAGES:-torch==2.6.0+cu124 torchvision==0.21.0+cu124}"
 
-export UV_CACHE_DIR HF_HOME TORCH_HOME TMPDIR
+export UV_CACHE_DIR UV_PYTHON_INSTALL_DIR HF_HOME TORCH_HOME TMPDIR
 if [ "${DRY_RUN:-0}" != "1" ]; then
-  mkdir -p "$UV_CACHE_DIR" "$HF_HOME" "$TORCH_HOME" "$TMPDIR" "$(dirname "$NANOFLOW_VENV")"
+  mkdir -p "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR" "$HF_HOME" "$TORCH_HOME" "$TMPDIR" "$(dirname "$NANOFLOW_VENV")"
 fi
 
 : "${DATASET_GCS_URI:?set DATASET_GCS_URI to a fully qualified gs://bucket/prefix URI}"
@@ -129,10 +132,25 @@ clone_repo() {
 }
 
 install_python_deps() {
-  mkdir -p "$UV_CACHE_DIR" "$HF_HOME" "$TORCH_HOME" "$TMPDIR" "$(dirname "$NANOFLOW_VENV")"
+  mkdir -p "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR" "$HF_HOME" "$TORCH_HOME" "$TMPDIR" "$(dirname "$NANOFLOW_VENV")"
   export UV_PROJECT_ENVIRONMENT="$NANOFLOW_VENV"
+  if [ -f "${NANOFLOW_VENV}/pyvenv.cfg" ] && [ ! -x "${NANOFLOW_VENV}/bin/python" ]; then
+    echo "removing invalid virtualenv with missing Python: ${NANOFLOW_VENV}" >&2
+    rm -rf "$NANOFLOW_VENV"
+  fi
   cd "$NANOFLOW_REPO_DIR"
   uv sync --frozen --no-dev --no-install-project
+  install_runpod_torch_wheels
+}
+
+install_runpod_torch_wheels() {
+  if [ -z "$RUNPOD_TORCH_PACKAGES" ]; then
+    return
+  fi
+  read -r -a torch_packages <<< "$RUNPOD_TORCH_PACKAGES"
+  uv pip install --python "${NANOFLOW_VENV}/bin/python" \
+    --index-url "$RUNPOD_TORCH_INDEX_URL" \
+    "${torch_packages[@]}"
 }
 
 write_env_file() {
@@ -144,6 +162,7 @@ write_env_file() {
     printf 'export NANOFLOW_REPO_ROOT=%q\n' "$NANOFLOW_REPO_DIR"
     printf 'export UV_PROJECT_ENVIRONMENT=%q\n' "$NANOFLOW_VENV"
     printf 'export UV_CACHE_DIR=%q\n' "$UV_CACHE_DIR"
+    printf 'export UV_PYTHON_INSTALL_DIR=%q\n' "$UV_PYTHON_INSTALL_DIR"
     printf 'export HF_HOME=%q\n' "$HF_HOME"
     printf 'export TORCH_HOME=%q\n' "$TORCH_HOME"
     printf 'export TMPDIR=%q\n' "$TMPDIR"
@@ -155,6 +174,8 @@ write_env_file() {
     printf 'export LATENT_CACHE_ROOT=%q\n' "$DATASET_CACHE_ROOT"
     printf 'export LATENT_CACHE_LINK=%q\n' "$DATASET_CACHE_ROOT"
     printf 'export RUNS_DIR=%q\n' "${RUNS_DIR:-${WORKSPACE}/runs}"
+    printf 'export RUNPOD_TORCH_INDEX_URL=%q\n' "$RUNPOD_TORCH_INDEX_URL"
+    printf 'export RUNPOD_TORCH_PACKAGES=%q\n' "$RUNPOD_TORCH_PACKAGES"
     printf 'export SKIP_SETUP=%q\n' "${SKIP_SETUP_AFTER_PREPARE:-1}"
   } >> "$RUNPOD_ENV_FILE"
 }
@@ -189,7 +210,8 @@ PY
 
 if [ "${DRY_RUN:-0}" = "1" ]; then
   echo "would clone $NANOFLOW_REPO_URL ref $NANOFLOW_REPO_REF to $NANOFLOW_REPO_DIR"
-  echo "would create venv $NANOFLOW_VENV and run: UV_CACHE_DIR=$UV_CACHE_DIR TMPDIR=$TMPDIR UV_PROJECT_ENVIRONMENT=$NANOFLOW_VENV uv sync --frozen --no-dev --no-install-project"
+  echo "would create venv $NANOFLOW_VENV and run: UV_CACHE_DIR=$UV_CACHE_DIR UV_PYTHON_INSTALL_DIR=$UV_PYTHON_INSTALL_DIR TMPDIR=$TMPDIR UV_PROJECT_ENVIRONMENT=$NANOFLOW_VENV uv sync --frozen --no-dev --no-install-project"
+  echo "would install RunPod torch wheels: uv pip install --python $NANOFLOW_VENV/bin/python --index-url $RUNPOD_TORCH_INDEX_URL $RUNPOD_TORCH_PACKAGES"
   echo "would sync: gcloud storage rsync -r $DATASET_GCS_URI $DATASET_CACHE_ROOT"
   echo "would write env file: $RUNPOD_ENV_FILE"
   exit 0
