@@ -1,0 +1,127 @@
+name: nf-imagenet-stage5-bench
+
+workdir: .
+
+resources:
+  infra: runpod
+  accelerators: H100-SXM:2
+  image_id: docker:runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
+  disk_size: 100
+
+volumes:
+  /workspace: nf-imagenet256
+
+envs:
+  RUNPOD_ENV_FILE: /workspace/nanoflow_runpod.env
+  LATENT_CACHE_LINK: /workspace/latent-caches/imagenet256/current
+  RUNS_DIR: /workspace/runs
+
+run: |
+  set -euo pipefail
+  if [ -f "$RUNPOD_ENV_FILE" ]; then
+    set -a
+    . "$RUNPOD_ENV_FILE"
+    set +a
+  fi
+
+  PYTHON_CMD=(uv run python)
+  if [ -n "${UV_PROJECT_ENVIRONMENT:-}" ] && [ -x "${UV_PROJECT_ENVIRONMENT}/bin/python" ]; then
+    PYTHON_CMD=("${UV_PROJECT_ENVIRONMENT}/bin/python")
+  fi
+
+  CACHE_ROOT="${LATENT_CACHE_LINK:-${DATASET_CACHE_ROOT:-/workspace/latent-caches/imagenet256/current}}"
+  if [ ! -f "${CACHE_ROOT}/metadata.json" ]; then
+    echo "missing latent cache metadata at ${CACHE_ROOT}/metadata.json" >&2
+    exit 1
+  fi
+
+  echo "=== environment ==="
+  pwd
+  nvidia-smi
+  "${PYTHON_CMD[@]}" - <<'PY'
+  import torch, torchvision
+  print('torch', torch.__version__)
+  print('torchvision', torchvision.__version__)
+  print('cuda available', torch.cuda.is_available())
+  print('cuda version', torch.version.cuda)
+  print('cudnn', torch.backends.cudnn.version())
+  print('nccl', torch.cuda.nccl.version() if torch.cuda.is_available() else None)
+  print('gpu count', torch.cuda.device_count())
+  PY
+
+  echo "=== dataloader benchmarks from /workspace ==="
+  for workers in 0 2 4 8; do
+    persistent_arg=(--persistent-workers)
+    if [ "$workers" = "0" ]; then persistent_arg=(--no-persistent-workers); fi
+    "${PYTHON_CMD[@]}" scripts/benchmark_imagenet_latent_dataloader.py \
+      --cache-root "$CACHE_ROOT" \
+      --batch-size 64 \
+      --num-workers "$workers" \
+      --prefetch-factor 4 \
+      "${persistent_arg[@]}" \
+      --transfer-device cuda \
+      --warmup-batches 10 \
+      --batches 200 \
+      --json
+  done
+
+  echo "=== scratch copy and benchmark ==="
+  SCRATCH_CACHE=/tmp/imagenet256-latent-cache
+  rm -rf "$SCRATCH_CACHE"
+  copy_start=$(date +%s)
+  cp -a "$CACHE_ROOT" "$SCRATCH_CACHE"
+  copy_end=$(date +%s)
+  echo "scratch copy seconds: $((copy_end - copy_start))"
+  "${PYTHON_CMD[@]}" scripts/benchmark_imagenet_latent_dataloader.py \
+    --cache-root "$SCRATCH_CACHE" \
+    --batch-size 64 \
+    --num-workers 8 \
+    --prefetch-factor 4 \
+    --persistent-workers \
+    --transfer-device cuda \
+    --warmup-batches 10 \
+    --batches 200 \
+    --json
+
+  echo "=== two gpu training probes ==="
+  for bs in 64 128; do
+    echo "--- batch size ${bs} ---"
+    monitor_log="/tmp/nvidia-smi-stage5-bs${bs}.csv"
+    ( while true; do nvidia-smi --query-gpu=timestamp,index,memory.used,utilization.gpu --format=csv,noheader,nounits; sleep 1; done ) > "$monitor_log" &
+    monitor_pid=$!
+    set +e
+    NPROC_PER_NODE=2 \
+    BATCH_SIZE="$bs" \
+    NUM_WORKERS=8 \
+    MAX_STEPS=100 \
+    EPOCHS=1 \
+    CHECKPOINT_EVERY=0 \
+    EVAL_EVERY=0 \
+    DISABLE_INFERENCE=1 \
+    RUNS_DIR="/workspace/runs/stage5-bs${bs}" \
+      bash scripts/runpod_train_imagenet256_latent.sh
+    status=$?
+    set -e
+    kill "$monitor_pid" 2>/dev/null || true
+    wait "$monitor_pid" 2>/dev/null || true
+    echo "nvidia-smi monitor tail for batch size ${bs}:"
+    tail -n 20 "$monitor_log" || true
+    "${PYTHON_CMD[@]}" - "$monitor_log" <<'PY'
+  import csv, sys
+  rows = []
+  with open(sys.argv[1]) as f:
+      for row in csv.reader(f):
+          if len(row) >= 4:
+              rows.append(row)
+  mem = [int(r[2].strip()) for r in rows if r[2].strip().isdigit()]
+  util = [int(r[3].strip()) for r in rows if r[3].strip().isdigit()]
+  print('monitor_samples', len(rows))
+  print('max_memory_mib', max(mem) if mem else None)
+  print('max_gpu_util_pct', max(util) if util else None)
+  print('mean_gpu_util_pct', round(sum(util) / len(util), 1) if util else None)
+  PY
+    if [ "$status" -ne 0 ]; then
+      echo "training probe failed for batch size ${bs}" >&2
+      exit "$status"
+    fi
+  done

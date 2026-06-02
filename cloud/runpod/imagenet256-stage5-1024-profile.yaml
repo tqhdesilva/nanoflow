@@ -1,0 +1,147 @@
+name: nf-imagenet-stage5-1024-profile
+
+workdir: .
+
+resources:
+  infra: runpod
+  accelerators: H100-SXM:2
+  image_id: docker:runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
+  disk_size: 100
+
+volumes:
+  /workspace: nf-imagenet256
+
+envs:
+  RUNPOD_ENV_FILE: /workspace/nanoflow_runpod.env
+  LATENT_CACHE_LINK: /workspace/latent-caches/imagenet256/current
+
+run: |
+  set -euo pipefail
+  if [ -f "$RUNPOD_ENV_FILE" ]; then
+    set -a
+    . "$RUNPOD_ENV_FILE"
+    set +a
+  fi
+
+  PYTHON_CMD=(uv run python)
+  TORCHRUN_CMD=(uv run torchrun)
+  if [ -n "${UV_PROJECT_ENVIRONMENT:-}" ] && [ -x "${UV_PROJECT_ENVIRONMENT}/bin/python" ]; then
+    PYTHON_CMD=("${UV_PROJECT_ENVIRONMENT}/bin/python")
+    if [ -x "${UV_PROJECT_ENVIRONMENT}/bin/torchrun" ]; then
+      TORCHRUN_CMD=("${UV_PROJECT_ENVIRONMENT}/bin/torchrun")
+    else
+      TORCHRUN_CMD=("${UV_PROJECT_ENVIRONMENT}/bin/python" -m torch.distributed.run)
+    fi
+  fi
+
+  CACHE_ROOT="${LATENT_CACHE_LINK:-${DATASET_CACHE_ROOT:-/workspace/latent-caches/imagenet256/current}}"
+  if [ ! -f "${CACHE_ROOT}/metadata.json" ]; then
+    echo "missing latent cache metadata at ${CACHE_ROOT}/metadata.json" >&2
+    exit 1
+  fi
+
+  echo "=== environment ==="
+  df -h /workspace /tmp
+  nvidia-smi
+  command -v ncu || true
+  command -v nsys || true
+  "${PYTHON_CMD[@]}" - <<'PY'
+  import torch, torchvision
+  print('torch', torch.__version__)
+  print('torchvision', torchvision.__version__)
+  print('cuda available', torch.cuda.is_available())
+  print('cuda version', torch.version.cuda)
+  print('cudnn', torch.backends.cudnn.version())
+  print('nccl', torch.cuda.nccl.version() if torch.cuda.is_available() else None)
+  print('gpu count', torch.cuda.device_count())
+  PY
+
+  echo "=== batch 1024 checkpoint safe validation ==="
+  rm -rf /tmp/nanoflow-stage5-bs1024
+  monitor_log="/tmp/nvidia-smi-stage5-bs1024.csv"
+  ( while true; do nvidia-smi --query-gpu=timestamp,index,memory.used,utilization.gpu --format=csv,noheader,nounits; sleep 1; done ) > "$monitor_log" &
+  monitor_pid=$!
+  set +e
+  "${TORCHRUN_CMD[@]}" --standalone --nproc_per_node=2 train.py \
+    distributed=ddp \
+    experiment=imagenet256_latent_cfg \
+    device=cuda \
+    dataset.cache_root="$CACHE_ROOT" \
+    runs_dir=/tmp/nanoflow-stage5-bs1024 \
+    training.epochs=1 \
+    training.batch_size=1024 \
+    training.num_workers=8 \
+    training.precision=bf16 \
+    training.ema_decay=0.9999 \
+    training.checkpoint_every=0 \
+    training.eval_every=0 \
+    training.max_steps=200 \
+    inference=null \
+    sample_logger=null \
+    train_loader.persistent_workers=true \
+    val_loader.persistent_workers=true \
+    train_loader.prefetch_factor=4 \
+    val_loader.prefetch_factor=4
+  status=$?
+  set -e
+  kill "$monitor_pid" 2>/dev/null || true
+  wait "$monitor_pid" 2>/dev/null || true
+  echo "nvidia-smi monitor tail for batch size 1024:"
+  tail -n 30 "$monitor_log" || true
+  "${PYTHON_CMD[@]}" - "$monitor_log" <<'PY'
+  import csv, sys
+  rows = []
+  with open(sys.argv[1]) as f:
+      for row in csv.reader(f):
+          if len(row) >= 4:
+              rows.append(row)
+  mem = [int(r[2].strip()) for r in rows if r[2].strip().isdigit()]
+  util = [int(r[3].strip()) for r in rows if r[3].strip().isdigit()]
+  print('monitor_samples', len(rows))
+  print('max_memory_mib', max(mem) if mem else None)
+  print('max_gpu_util_pct', max(util) if util else None)
+  print('mean_gpu_util_pct', round(sum(util) / len(util), 1) if util else None)
+  PY
+  if [ "$status" -ne 0 ]; then
+    echo "batch 1024 validation failed with status ${status}" >&2
+    exit "$status"
+  fi
+
+  echo "=== nsight compute occupancy probe ==="
+  if command -v ncu >/dev/null 2>&1; then
+    rm -rf /tmp/nanoflow-stage5-ncu
+    set +e
+    CUDA_VISIBLE_DEVICES=0 timeout 900 ncu \
+      --target-processes all \
+      --metrics sm__warps_active.avg.pct_of_peak_sustained_active,sm__throughput.avg.pct_of_peak_sustained_elapsed \
+      --launch-skip 100 \
+      --launch-count 40 \
+      --csv \
+      --log-file /tmp/ncu-stage5-bs1024.csv \
+      "${PYTHON_CMD[@]}" train.py \
+        experiment=imagenet256_latent_cfg \
+        device=cuda \
+        dataset.cache_root="$CACHE_ROOT" \
+        runs_dir=/tmp/nanoflow-stage5-ncu \
+        training.epochs=1 \
+        training.batch_size=1024 \
+        training.num_workers=8 \
+        training.precision=bf16 \
+        training.ema_decay=0.9999 \
+        training.checkpoint_every=0 \
+        training.eval_every=0 \
+        training.max_steps=2 \
+        inference=null \
+        sample_logger=null \
+        train_loader.persistent_workers=true \
+        val_loader.persistent_workers=true \
+        train_loader.prefetch_factor=4 \
+        val_loader.prefetch_factor=4
+    ncu_status=$?
+    set -e
+    echo "ncu status: $ncu_status"
+    echo "ncu log tail:"
+    tail -n 80 /tmp/ncu-stage5-bs1024.csv || true
+  else
+    echo "ncu not available"
+  fi

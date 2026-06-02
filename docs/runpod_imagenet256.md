@@ -126,7 +126,7 @@ SkyPilot's `gpus list` output is a catalog and pricing view. Use RunPod's `stock
 
 Use a service account key rather than interactive `gcloud auth login`.
 
-For cache hydration only, grant the service account `roles/storage.objectViewer` on the bucket or relevant prefix. If training pods will sync checkpoints or promoted artifacts back to GCS, add write permissions for those output prefixes.
+For cache hydration, grant the service account `roles/storage.objectViewer` on the bucket or relevant prefix.
 
 Supported auth inputs:
 

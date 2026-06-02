@@ -1,0 +1,24 @@
+name: nf-imagenet-disk-check
+
+workdir: .
+
+resources:
+  infra: runpod
+  cpus: 2+
+  memory: 8+
+  image_id: docker:python:3.12-slim-bookworm
+  disk_size: 5
+
+volumes:
+  /workspace: nf-imagenet256
+
+run: |
+  set -euo pipefail
+  echo "=== df ==="
+  df -h /workspace /tmp || true
+  echo "=== workspace top-level sizes ==="
+  du -h -d 1 /workspace 2>/dev/null | sort -h || true
+  echo "=== runs sizes ==="
+  du -h -d 2 /workspace/runs 2>/dev/null | sort -h | tail -n 40 || true
+  echo "=== cache size ==="
+  du -h -d 1 /workspace/latent-caches/imagenet256 2>/dev/null | sort -h || true
