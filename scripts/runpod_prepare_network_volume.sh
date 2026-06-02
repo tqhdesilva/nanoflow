@@ -16,6 +16,9 @@ INSTALL_GCLOUD="${INSTALL_GCLOUD:-1}"
 INSTALL_SYSTEM_PACKAGES="${INSTALL_SYSTEM_PACKAGES:-1}"
 
 export UV_CACHE_DIR HF_HOME TORCH_HOME TMPDIR
+if [ "${DRY_RUN:-0}" != "1" ]; then
+  mkdir -p "$UV_CACHE_DIR" "$HF_HOME" "$TORCH_HOME" "$TMPDIR" "$(dirname "$NANOFLOW_VENV")"
+fi
 
 : "${DATASET_GCS_URI:?set DATASET_GCS_URI to a fully qualified gs://bucket/prefix URI}"
 
