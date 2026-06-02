@@ -2,11 +2,9 @@
 
 ## Recommendation
 
-Start without a custom Docker image. Use a RunPod PyTorch image, run `uv sync --frozen --no-dev`, and keep the uv cache plus virtualenv on the RunPod network volume. The first pod pays the install cost. Later pods reuse `/workspace/.cache/uv` and `/workspace/.venvs/nanoflow`.
+Use a RunPod network volume as warm project storage. Run one CPU SkyPilot task in the target RunPod data center before training. That task clones NanoFlow, creates a uv virtualenv on the volume, installs project dependencies with `uv pip install`, writes a reusable env file, and hydrates the latent cache from GCS.
 
-Build a custom image only if startup time is still annoying after the network volume cache is warm, or if the exact CUDA, PyTorch, and system package set needs to be frozen.
-
-RunPod network volumes mount at `/workspace`. SkyPilot can create and mount them with `type: runpod-network-volume`. SkyPilot can also use a Docker image as the runtime through `resources.image_id: docker:<image>`. Do not plan on running Docker inside the pod for this workflow.
+Pin the CPU setup pod and the later GPU training pod to the same RunPod data center as the network volume.
 
 ## Network volume layout
 
@@ -16,25 +14,107 @@ RunPod network volumes mount at `/workspace`. SkyPilot can create and mount them
   .cache/huggingface/
   .cache/torch/
   .venvs/nanoflow/
-  latent-caches/imagenet256/
-    sd-vae-ft-ema-fp16/
-    current -> sd-vae-ft-ema-fp16
+  nanoflow/
+  nanoflow_runpod.env
+  latent-caches/imagenet256/current/
   runs/
 ```
 
-Default GCS source for the latent cache:
+The GCS cache source is passed at launch time as a full URI through `DATASET_GCS_URI`.
 
-```text
-gs://${NANOFLOW_GCS_BUCKET}/imagenet256/latent/sd-vae-ft-ema-fp16
+## Required launch inputs
+
+- RunPod data center, for example `runpod/US/US-CA-2`.
+- Dataset cache URI, for example `gs://<bucket>/<prefix>`.
+- Optional network-volume destination path. The default is `/workspace/latent-caches/imagenet256/current`.
+- Optional `NANOFLOW_REPO_URL` and `NANOFLOW_REPO_REF` if the default repo or branch is not the one to test.
+- GCP service account credentials with read access to the cache prefix.
+
+## Choosing a RunPod data center
+
+First confirm SkyPilot can use RunPod:
+
+```bash
+sky check runpod
 ```
+
+Use RunPod's API to find live data center IDs, stock status, and network volume support. The SkyPilot CLI currently shows RunPod regions such as `CA` or `US`, while RunPod data center IDs are values such as `US-GA-1` or `CA-MTL-1`.
+
+For a concise H100 table, use the repo helper:
+
+```bash
+RUNPOD_API_KEY=<runpod-api-key> scripts/runpod_list_h100_datacenters.sh
+```
+
+Useful option:
+
+```bash
+REQUIRE_STORAGE_SUPPORT=1 GPU_QUERY="H100" RUNPOD_API_KEY=<runpod-api-key> \
+  scripts/runpod_list_h100_datacenters.sh
+```
+
+`REQUIRE_STORAGE_SUPPORT=1` keeps only data centers that support network volumes. It is the default, but keeping it explicit in launch notes avoids accidentally selecting a GPU-only data center. Set `GPU_QUERY` to the GPU family you want to search for, for example `H100`.
+
+By default, the helper calls RunPod GraphQL directly and prints data centers whose `gpuAvailability` entry matches `GPU_QUERY`, has a non-empty `stockStatus`, and has `storageSupport=true`. This filters out data centers with H100 availability but no network volume support, for example locations like `AP-IN-1` when RunPod reports `storageSupport=false`. Results are sorted by `High`, `Medium`, then `Low`.
+
+For raw RunPod CLI inspection, use:
+
+```bash
+RUNPOD_API_KEY=<runpod-api-key> runpodctl datacenter list -o json
+```
+
+Note that `runpodctl` may omit `storageSupport` from its output, so use the helper when filtering for network volume support.
+
+Use SkyPilot's GPU catalog as a secondary price and shape check:
+
+```bash
+sky gpus list H100:8 --infra runpod --all-regions
+sky gpus list H100:8 --infra runpod --all-regions -o json
+```
+
+For a quick optimizer view, let SkyPilot pick the cheapest country-level candidate without pinning a data center:
+
+```bash
+sky launch --dryrun --infra runpod --gpus H100:8 'echo ok'
+```
+
+After choosing a candidate RunPod data center ID, validate that SkyPilot accepts the full infra string:
+
+```bash
+sky launch --dryrun --infra runpod/US/US-CA-2 --gpus H100:8 'echo ok'
+```
+
+An invalid data center ID fails immediately. A successful dry run means the SkyPilot catalog accepts that GPU shape in that RunPod region. It does not reserve capacity and should not be treated as a live stock guarantee.
+
+Network volumes require the full RunPod data center ID in the `infra` value. Use `scripts/runpod_list_h100_datacenters.sh` as the read-only filter for `storageSupport=true`, then create or reuse the project volume in the selected data center:
+
+```bash
+sky volumes apply --infra runpod/US/US-CA-2 cloud/runpod/runpod-volume.yaml
+sky volumes ls --refresh -v
+```
+
+If you want a smaller disposable probe before creating the real project volume, use the minimum RunPod network volume size, then delete it:
+
+```bash
+sky volumes apply --name nf-rpvol-probe \
+  --infra runpod/US/US-CA-2 \
+  --type runpod-network-volume \
+  --size 10Gi \
+  -y
+sky volumes delete nf-rpvol-probe -y
+```
+
+If `sky volumes apply` fails for the selected data center, choose another candidate and keep setup and training pinned to that new data center. Once a volume exists, the CPU setup task and GPU training task must use the same `--infra runpod/<country>/<data-center>` value.
+
+SkyPilot's `gpus list` output is a catalog and pricing view. Use RunPod's `stockStatus` and `storageSupport` from the helper for live availability and network volume support, then feed the chosen data center ID back into SkyPilot for `sky volumes apply`, setup, and training.
 
 ## GCS access
 
 Use a service account key rather than interactive `gcloud auth login`.
 
-For cache hydration only, grant the service account `roles/storage.objectViewer` on the bucket or the relevant prefix. If the pod will sync checkpoints or promoted artifacts back to GCS, add write permissions for those output prefixes.
+For cache hydration only, grant the service account `roles/storage.objectViewer` on the bucket or relevant prefix. If training pods will sync checkpoints or promoted artifacts back to GCS, add write permissions for those output prefixes.
 
-Supported inputs for `scripts/runpod_hydrate_imagenet_latents.sh`:
+Supported auth inputs:
 
 ```bash
 export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
@@ -43,17 +123,70 @@ export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
 or:
 
 ```bash
-export GCP_SERVICE_ACCOUNT_JSON_B64="$(base64 -w0 /path/to/service-account.json)"
+export GCP_SERVICE_ACCOUNT_JSON_B64="$(base64 < /path/to/service-account.json | tr -d '\n')"
 ```
 
-SkyPilot example:
+## SkyPilot flow
+
+Create or update the network volume in the chosen data center:
 
 ```bash
-sky launch -c nf-hydrate cloud/runpod/hydrate-latents.yaml \
-  --secret GCP_SERVICE_ACCOUNT_JSON_B64="$(base64 -w0 /path/to/service-account.json)"
+sky volumes apply --infra runpod/<country>/<data-center> cloud/runpod/runpod-volume.yaml
 ```
 
-## Manual CPU pod hydration
+Prepare the volume from a CPU worker in the same data center. The setup YAML keeps requirements small (`cpus: 2+`, `memory: 8+`, `disk_size: 5`) so SkyPilot can choose an available CPU pod. The network volume mounted at `/workspace` holds the repo, venv, caches, and latent data; the pod disk is only for the container layer and apt installs.
+
+```bash
+scripts/sky_runpod_prepare_network_volume.sh \
+  --infra runpod/<country>/<data-center> \
+  --dataset-gcs-uri gs://<bucket>/<prefix> \
+  --secret GCP_SERVICE_ACCOUNT_JSON_B64="$(base64 < /path/to/service-account.json | tr -d '\n')"
+```
+
+If the default still has no stock, keep the request broad and let SkyPilot choose another CPU shape:
+
+```bash
+scripts/sky_runpod_prepare_network_volume.sh \
+  --infra runpod/<country>/<data-center> \
+  --dataset-gcs-uri gs://<bucket>/<prefix> \
+  --cpus 2+ \
+  --memory 4+ \
+  --disk-size 5 \
+  --retry-until-up \
+  --secret GCP_SERVICE_ACCOUNT_JSON_B64="$(base64 < /path/to/service-account.json | tr -d '\n')"
+```
+
+Equivalent direct SkyPilot command:
+
+```bash
+sky launch -c nf-imagenet-prepare \
+  --infra runpod/<country>/<data-center> \
+  --env DATASET_GCS_URI=gs://<bucket>/<prefix> \
+  --env DATASET_CACHE_ROOT=/workspace/latent-caches/imagenet256/current \
+  --secret GCP_SERVICE_ACCOUNT_JSON_B64="$(base64 < /path/to/service-account.json | tr -d '\n')" \
+  cloud/runpod/prepare-network-volume.yaml
+```
+
+Short GPU smoke run after the volume is prepared:
+
+```bash
+sky launch -c nf-imagenet-ddp \
+  --infra runpod/<country>/<data-center> \
+  --env SMOKE=1 \
+  --env NPROC_PER_NODE=2 \
+  --env BATCH_SIZE=8 \
+  cloud/runpod/imagenet256-latent-ddp.yaml
+```
+
+Pilot run:
+
+```bash
+sky launch -c nf-imagenet-ddp \
+  --infra runpod/<country>/<data-center> \
+  cloud/runpod/imagenet256-latent-ddp.yaml
+```
+
+## Manual CPU pod preparation
 
 Attach the RunPod network volume, open a shell, then run:
 
@@ -62,55 +195,19 @@ cd /workspace
 git clone <nanoflow-repo-url> nanoflow
 cd /workspace/nanoflow
 
-export NANOFLOW_GCS_PROJECT=<gcp-project>
-export NANOFLOW_GCS_BUCKET=<gcs-bucket>
-export GCP_SERVICE_ACCOUNT_JSON_B64="$(base64 -w0 /path/to/service-account.json)"
+export DATASET_GCS_URI=gs://<bucket>/<prefix>
+export GCP_SERVICE_ACCOUNT_JSON_B64="$(base64 < /path/to/service-account.json | tr -d '\n')"
 
-bash scripts/runpod_hydrate_imagenet_latents.sh
+bash scripts/runpod_prepare_network_volume.sh
 ```
-
-The script installs `gcloud` when needed, authenticates, syncs the cache to `/workspace/latent-caches/imagenet256/sd-vae-ft-ema-fp16`, and updates `/workspace/latent-caches/imagenet256/current`.
 
 Dry run:
 
 ```bash
-DRY_RUN=1 NANOFLOW_GCS_BUCKET=<gcs-bucket> \
-  bash scripts/runpod_hydrate_imagenet_latents.sh
-```
-
-## SkyPilot flow
-
-Create the volume:
-
-```bash
-# Edit the data center and size first.
-sky volumes apply cloud/runpod/runpod-volume.yaml
-```
-
-Hydrate cached latents:
-
-```bash
-sky launch -c nf-hydrate cloud/runpod/hydrate-latents.yaml \
-  --env NANOFLOW_GCS_PROJECT=<gcp-project> \
-  --env NANOFLOW_GCS_BUCKET=<gcs-bucket> \
-  --secret GCP_SERVICE_ACCOUNT_JSON_B64="$(base64 -w0 /path/to/service-account.json)"
-```
-
-Short GPU smoke run:
-
-```bash
-sky launch -c nf-imagenet-ddp cloud/runpod/imagenet256-latent-ddp.yaml \
-  --env SMOKE=1 \
-  --env NPROC_PER_NODE=2 \
-  --env BATCH_SIZE=8
-```
-
-Pilot run:
-
-```bash
-sky launch -c nf-imagenet-ddp cloud/runpod/imagenet256-latent-ddp.yaml
+DRY_RUN=1 DATASET_GCS_URI=gs://<bucket>/<prefix> \
+  bash scripts/runpod_prepare_network_volume.sh
 ```
 
 ## Current decision
 
-Do not build a custom image for the first RunPod pass. The initial setup already has to hydrate the latent cache onto the network volume, so the first `uv sync` overhead is acceptable. Keep dependency caches and the project venv on `/workspace` so follow-up pods reuse them.
+Do not build a custom image for the first RunPod pass. The first CPU setup task already has to hydrate the latent cache onto the network volume. Keep dependency caches and the project venv on `/workspace` so follow-up pods reuse them.

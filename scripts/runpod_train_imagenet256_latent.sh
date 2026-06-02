@@ -1,18 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+WORKSPACE="${WORKSPACE:-/workspace}"
+RUNPOD_ENV_FILE="${RUNPOD_ENV_FILE:-${WORKSPACE}/nanoflow_runpod.env}"
+if [ -f "$RUNPOD_ENV_FILE" ] && [ "${LOAD_RUNPOD_ENV:-1}" = "1" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$RUNPOD_ENV_FILE"
+  set +a
+fi
+
 ROOT="${NANOFLOW_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 WORKSPACE="${WORKSPACE:-/workspace}"
-LATENT_CACHE_LINK="${LATENT_CACHE_LINK:-${WORKSPACE}/latent-caches/imagenet256/current}"
+LATENT_CACHE_LINK="${LATENT_CACHE_LINK:-${DATASET_CACHE_ROOT:-${WORKSPACE}/latent-caches/imagenet256/current}}"
 RUNS_DIR="${RUNS_DIR:-${WORKSPACE}/runs}"
 
 if [ "${SKIP_SETUP:-0}" != "1" ]; then
   "$ROOT/scripts/runpod_setup.sh"
 fi
 
+PYTHON_CMD=(uv run python)
+TORCHRUN_CMD=(uv run torchrun)
+if [ "${USE_PREPARED_VENV:-1}" = "1" ] && [ -n "${UV_PROJECT_ENVIRONMENT:-}" ] && [ -x "${UV_PROJECT_ENVIRONMENT}/bin/python" ]; then
+  PYTHON_CMD=("${UV_PROJECT_ENVIRONMENT}/bin/python")
+  if [ -x "${UV_PROJECT_ENVIRONMENT}/bin/torchrun" ]; then
+    TORCHRUN_CMD=("${UV_PROJECT_ENVIRONMENT}/bin/torchrun")
+  else
+    TORCHRUN_CMD=("${UV_PROJECT_ENVIRONMENT}/bin/python" -m torch.distributed.run)
+  fi
+fi
+
 if [ ! -f "${LATENT_CACHE_LINK}/metadata.json" ]; then
   echo "missing latent cache metadata at ${LATENT_CACHE_LINK}/metadata.json" >&2
-  echo "run scripts/runpod_hydrate_imagenet_latents.sh first" >&2
+  echo "run scripts/runpod_prepare_network_volume.sh first" >&2
   exit 1
 fi
 
@@ -20,7 +40,7 @@ if [ -n "${NPROC:-}" ] && [ -z "${NPROC_PER_NODE:-}" ]; then
   NPROC_PER_NODE="$NPROC"
 fi
 if [ -z "${NPROC_PER_NODE:-}" ]; then
-  NPROC_PER_NODE=$(uv run python - <<'PY'
+  NPROC_PER_NODE=$("${PYTHON_CMD[@]}" - <<'PY'
 import torch
 print(max(torch.cuda.device_count(), 1))
 PY
@@ -79,7 +99,7 @@ args+=("$@")
 cd "$ROOT"
 if [ "$NPROC_PER_NODE" -gt 1 ]; then
   if [ "${NNODES:-1}" -gt 1 ]; then
-    exec uv run torchrun \
+    exec "${TORCHRUN_CMD[@]}" \
       --nnodes="${NNODES}" \
       --node_rank="${NODE_RANK:?set NODE_RANK for multi node}" \
       --nproc_per_node="$NPROC_PER_NODE" \
@@ -87,7 +107,7 @@ if [ "$NPROC_PER_NODE" -gt 1 ]; then
       --master_port="${MASTER_PORT:-29500}" \
       train.py distributed=ddp "${args[@]}"
   fi
-  exec uv run torchrun --standalone --nproc_per_node="$NPROC_PER_NODE" train.py distributed=ddp "${args[@]}"
+  exec "${TORCHRUN_CMD[@]}" --standalone --nproc_per_node="$NPROC_PER_NODE" train.py distributed=ddp "${args[@]}"
 fi
 
-exec uv run python train.py "${args[@]}"
+exec "${PYTHON_CMD[@]}" train.py "${args[@]}"

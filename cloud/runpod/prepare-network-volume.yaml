@@ -1,15 +1,20 @@
-name: nf-imagenet-hydrate
+name: nf-imagenet-prepare-volume
 
-# Legacy hydrate-only task. Prefer prepare-network-volume.yaml for new runs.
+# CPU setup task for the RunPod network volume.
 # Required at launch time:
 #   --infra runpod/<country>/<data-center>
 #   --env DATASET_GCS_URI=gs://<bucket>/<prefix>
 #   --secret GCP_SERVICE_ACCOUNT_JSON_B64="$(base64 < /path/to/gcp-sa.json | tr -d '\n')"
+# Optional:
+#   --env DATASET_CACHE_ROOT=/workspace/latent-caches/imagenet256/current
+#   --env NANOFLOW_REPO_REF=<git-ref>
 
 workdir: .
 
 resources:
   infra: runpod
+  # Keep setup requirements small so SkyPilot can choose an available CPU pod.
+  # In EU-NL-1, this typically resolves to a shape like cpu3g-2-8.
   cpus: 2+
   memory: 8+
   image_id: docker:python:3.12-slim-bookworm
@@ -20,11 +25,13 @@ volumes:
 
 envs:
   DATASET_CACHE_ROOT: /workspace/latent-caches/imagenet256/current
-  LATENT_CACHE_LINK: /workspace/latent-caches/imagenet256/current
+  RUNPOD_ENV_FILE: /workspace/nanoflow_runpod.env
+  NANOFLOW_REPO_DIR: /workspace/nanoflow
+  NANOFLOW_VENV: /workspace/.venvs/nanoflow
 
 setup: |
   apt-get update
   apt-get install -y git curl ca-certificates gnupg python3 python3-pip python3-venv
 
 run: |
-  bash scripts/runpod_hydrate_imagenet_latents.sh
+  bash scripts/runpod_prepare_network_volume.sh

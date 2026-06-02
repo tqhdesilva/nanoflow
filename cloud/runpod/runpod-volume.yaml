@@ -1,6 +1,8 @@
 name: nf-imagenet256
-# Replace with the data center where you will run the pods.
-infra: runpod/CA/CA-MTL-1
+# Apply with the same data center used for setup and training:
+# sky volumes apply --infra runpod/<country>/<data-center> cloud/runpod/runpod-volume.yaml
+infra: runpod
 type: runpod-network-volume
-# 100Gi is enough for latents plus checkpoints. Use 500Gi if raw images also live here.
-size: 500Gi
+# 240Gi leaves room for the 11Gi latent cache, dependency caches, checkpoints, logs, and pilot outputs.
+# Increase this if raw ImageNet images will also live on the network volume.
+size: 240Gi

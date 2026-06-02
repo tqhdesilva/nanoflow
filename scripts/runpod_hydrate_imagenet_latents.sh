@@ -21,13 +21,35 @@ if [ -n "$_pre_bucket_set" ]; then
 fi
 
 WORKSPACE="${WORKSPACE:-/workspace}"
-: "${NANOFLOW_GCS_BUCKET:?set NANOFLOW_GCS_BUCKET}"
-: "${LATENT_GCS_PATH:=imagenet256/latent/sd-vae-ft-ema-fp16}"
-: "${LATENT_CACHE_ROOT:=${WORKSPACE}/latent-caches/imagenet256/sd-vae-ft-ema-fp16}"
-: "${LATENT_CACHE_LINK:=${WORKSPACE}/latent-caches/imagenet256/current}"
+: "${LATENT_CACHE_ROOT:=${DATASET_CACHE_ROOT:-${WORKSPACE}/latent-caches/imagenet256/current}}"
+: "${LATENT_CACHE_LINK:=${LATENT_CACHE_ROOT}}"
 : "${INSTALL_GCLOUD:=1}"
 
-GCS_URI="gs://${NANOFLOW_GCS_BUCKET}/${LATENT_GCS_PATH}"
+if [ -z "${DATASET_GCS_URI:-}" ] && [ -n "${LATENT_CACHE_GCS_URI:-}" ]; then
+  DATASET_GCS_URI="$LATENT_CACHE_GCS_URI"
+fi
+if [ -z "${DATASET_GCS_URI:-}" ]; then
+  if [ -n "${NANOFLOW_GCS_BUCKET:-}" ] && [ -n "${LATENT_GCS_PATH:-}" ]; then
+    DATASET_GCS_URI="gs://${NANOFLOW_GCS_BUCKET}/${LATENT_GCS_PATH}"
+  else
+    echo "set DATASET_GCS_URI to a fully qualified gs://bucket/prefix URI" >&2
+    exit 1
+  fi
+fi
+if [[ "$DATASET_GCS_URI" != gs://* ]]; then
+  echo "DATASET_GCS_URI must start with gs://" >&2
+  exit 1
+fi
+
+gcs_without_scheme="${DATASET_GCS_URI#gs://}"
+NANOFLOW_GCS_BUCKET="${gcs_without_scheme%%/*}"
+LATENT_GCS_PATH="${gcs_without_scheme#*/}"
+if [ -z "$NANOFLOW_GCS_BUCKET" ] || [ "$LATENT_GCS_PATH" = "$gcs_without_scheme" ] || [ -z "$LATENT_GCS_PATH" ]; then
+  echo "DATASET_GCS_URI must include a bucket and prefix, for example gs://bucket/path" >&2
+  exit 1
+fi
+
+GCS_URI="$DATASET_GCS_URI"
 
 sudo_cmd=()
 if [ "$(id -u)" -ne 0 ]; then
@@ -94,7 +116,9 @@ EOF
 
 if [ "${DRY_RUN:-0}" = "1" ]; then
   echo "gcloud storage rsync -r $GCS_URI $LATENT_CACHE_ROOT"
-  echo "ln -sfn $LATENT_CACHE_ROOT $LATENT_CACHE_LINK"
+  if [ "$LATENT_CACHE_LINK" != "$LATENT_CACHE_ROOT" ]; then
+    echo "ln -sfn $LATENT_CACHE_ROOT $LATENT_CACHE_LINK"
+  fi
   exit 0
 fi
 
@@ -112,7 +136,9 @@ if [ ! -f "${LATENT_CACHE_ROOT}/metadata.json" ]; then
   exit 1
 fi
 
-ln -sfn "$LATENT_CACHE_ROOT" "$LATENT_CACHE_LINK"
+if [ "$LATENT_CACHE_LINK" != "$LATENT_CACHE_ROOT" ]; then
+  ln -sfn "$LATENT_CACHE_ROOT" "$LATENT_CACHE_LINK"
+fi
 python_bin=python
 if ! command -v python >/dev/null 2>&1; then
   python_bin=python3
