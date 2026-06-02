@@ -124,8 +124,9 @@ clone_repo() {
 
 install_python_deps() {
   mkdir -p "$UV_CACHE_DIR" "$HF_HOME" "$TORCH_HOME" "$(dirname "$NANOFLOW_VENV")"
-  uv venv "$NANOFLOW_VENV" --python python3
-  uv pip install --python "${NANOFLOW_VENV}/bin/python" -e "$NANOFLOW_REPO_DIR"
+  export UV_PROJECT_ENVIRONMENT="$NANOFLOW_VENV"
+  cd "$NANOFLOW_REPO_DIR"
+  uv sync --frozen --no-dev --no-install-project
 }
 
 write_env_file() {
@@ -181,7 +182,7 @@ PY
 
 if [ "${DRY_RUN:-0}" = "1" ]; then
   echo "would clone $NANOFLOW_REPO_URL ref $NANOFLOW_REPO_REF to $NANOFLOW_REPO_DIR"
-  echo "would create venv $NANOFLOW_VENV and run: uv pip install --python ${NANOFLOW_VENV}/bin/python -e $NANOFLOW_REPO_DIR"
+  echo "would create venv $NANOFLOW_VENV and run: UV_PROJECT_ENVIRONMENT=$NANOFLOW_VENV uv sync --frozen --no-dev --no-install-project"
   echo "would sync: gcloud storage rsync -r $DATASET_GCS_URI $DATASET_CACHE_ROOT"
   echo "would write env file: $RUNPOD_ENV_FILE"
   exit 0

@@ -16,7 +16,7 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 cd "$ROOT"
-uv sync --frozen --no-dev
+uv sync --frozen --no-dev --no-install-project
 uv run python - <<'PY'
 import torch
 import torchvision

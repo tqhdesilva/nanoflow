@@ -2,7 +2,7 @@
 
 ## Recommendation
 
-Use a RunPod network volume as warm project storage. Run one CPU SkyPilot task in the target RunPod data center before training. That task clones NanoFlow, creates a uv virtualenv on the volume, installs project dependencies with `uv pip install`, writes a reusable env file, and hydrates the latent cache from GCS.
+Use a RunPod network volume as warm project storage. Run one CPU SkyPilot task in the target RunPod data center before training. That task clones NanoFlow, creates a uv virtualenv on the volume, installs project dependencies with `uv sync --no-install-project`, writes a reusable env file, and hydrates the latent cache from GCS.
 
 Pin the CPU setup pod and the later GPU training pod to the same RunPod data center as the network volume.
 
