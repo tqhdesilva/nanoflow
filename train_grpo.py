@@ -86,8 +86,7 @@ def main(cfg) -> None:
     epoch = 0
 
     def _sigterm(_sig, _frame):
-        print("\nSIGTERM caught, saving preempted checkpoint")
-        _save("preempted")
+        print("\nSIGTERM caught, preserving latest epoch checkpoint")
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _sigterm)

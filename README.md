@@ -108,7 +108,7 @@ Checkpoints save every `training.checkpoint_every` epochs to `runs/{prefix}_{tim
 uv run python train.py training.resume=runs/{prefix}_{timestamp}/checkpoints/latest.pt
 ```
 
-SIGTERM (e.g. RunPod preemption) triggers a `preempted.pt` save before exit.
+On SIGTERM, training exits without writing a mid-epoch checkpoint, so `latest.pt` remains the most recent completed epoch checkpoint.
 
 ## Flow matching in brief
 

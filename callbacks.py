@@ -2,7 +2,8 @@
 
 Plain-Python callback protocol. Each hook takes `trainer` with no framework base class.
 Hooks invoked by `Trainer.fit`: on_train_start, on_train_epoch_start, on_train_step_end,
-on_train_epoch_end, on_eval_epoch_start, on_eval_epoch_end, on_train_end.
+on_train_epoch_end, on_eval_epoch_start, on_eval_epoch_end, on_train_end,
+on_train_cleanup.
 """
 
 from __future__ import annotations
@@ -101,7 +102,7 @@ class RunDirCallback:
                 yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
             self.writer = SummaryWriter(log_dir=str(self.tb_dir))
 
-    def on_train_end(self, trainer) -> None:
+    def on_train_cleanup(self, trainer) -> None:
         if self.writer is not None:
             self.writer.close()
 
@@ -111,7 +112,7 @@ class CheckpointCallback:
 
     Saves every `checkpoint_every` epochs and at end of training. On
     `on_train_start`, restores from `resume` path if provided. `save_path(name)`
-    is exposed so a SIGTERM handler can write `preempted.pt`.
+    is exposed for callers that need a named checkpoint.
     """
 
     def __init__(

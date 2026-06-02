@@ -207,6 +207,7 @@ class Trainer:
         for cb in callbacks:
             if hasattr(cb, "on_train_start"):
                 cb.on_train_start(self)
+        completed = False
         try:
             while self.epoch < self.training.epochs and not self._reached_max_steps():
                 for cb in callbacks:
@@ -232,10 +233,17 @@ class Trainer:
 
                 if reached_max_steps:
                     break
+            completed = True
         finally:
-            for cb in callbacks:
-                if hasattr(cb, "on_train_end"):
-                    cb.on_train_end(self)
+            try:
+                if completed:
+                    for cb in callbacks:
+                        if hasattr(cb, "on_train_end"):
+                            cb.on_train_end(self)
+            finally:
+                for cb in callbacks:
+                    if hasattr(cb, "on_train_cleanup"):
+                        cb.on_train_cleanup(self)
 
     def _reached_max_steps(self) -> bool:
         max_steps = self.training.max_steps
@@ -395,14 +403,8 @@ def main(cfg) -> None:
             cfg=cfg,
         )
         callbacks = _build_callbacks(cfg, run_dir_cb)
-        ckpt_cb = next(cb for cb in callbacks if isinstance(cb, CheckpointCallback))
-
         def _handler(sig, frame):
-            print(
-                f"\nSIGTERM caught, saving preempted checkpoint to "
-                f"{ckpt_cb.save_path('preempted')}"
-            )
-            ckpt_cb.save(trainer, "preempted")
+            print("\nSIGTERM caught, preserving latest epoch checkpoint")
             sys.exit(0)
 
         signal.signal(signal.SIGTERM, _handler)

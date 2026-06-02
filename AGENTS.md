@@ -93,12 +93,12 @@ Sample PNGs are written when `inference.save_path` is set (each experiment YAML 
 All run artifacts live under `runs_dir` (default: `runs`). Each run gets `{run_prefix}_{timestamp}/`:
 ```
 runs/{prefix}_{timestamp}/
-  checkpoints/          # latest.pt, preempted.pt
+  checkpoints/          # latest.pt
   tensorboard/          # TensorBoard event files
   metadata.yaml         # resolved config + git info (commit, branch, dirty, diff)
 ```
 
-Checkpoints saved every `training.checkpoint_every` epochs. Validation and sample logging run every `training.eval_every` epochs. SIGTERM saves `preempted.pt`.
+Checkpoints saved every `training.checkpoint_every` epochs. Validation and sample logging run every `training.eval_every` epochs. On SIGTERM, training exits without writing a mid-epoch checkpoint, so `latest.pt` remains the most recent completed epoch checkpoint.
 Resume: `training.resume=runs/.../checkpoints/latest.pt`.
 
 ## Inference
