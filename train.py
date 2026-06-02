@@ -71,10 +71,12 @@ class Trainer:
         training,
         device: torch.device,
         distributed: Optional[str] = None,
+        retryer=None,
     ):
         self.device = device
         self.training = training
         self.flow = flow
+        self.retryer = retryer
 
         self.raw_module = model.to(device)
 
@@ -196,6 +198,16 @@ class Trainer:
         vt = self.flow.target(x_0, eps, t)
         return F.mse_loss(v_pred, vt), v_pred
 
+    def _call_callback(self, cb, hook: str) -> None:
+        method = getattr(cb, hook)
+        if self.retryer is None or hook not in {"on_train_epoch_end", "on_train_end"}:
+            method(self)
+            return
+        self.retryer.run(
+            lambda: method(self),
+            description=f"{cb.__class__.__name__}.{hook}",
+        )
+
     def fit(self, train_loader, val_loader, callbacks=None) -> None:
         callbacks = callbacks or []
         if self.lr_scheduler is None:
@@ -217,7 +229,7 @@ class Trainer:
                 self.epoch += 1
                 for cb in callbacks:
                     if hasattr(cb, "on_train_epoch_end"):
-                        cb.on_train_epoch_end(self)
+                        self._call_callback(cb, "on_train_epoch_end")
 
                 if (
                     self.training.eval_every > 0
@@ -239,7 +251,7 @@ class Trainer:
                 if completed:
                     for cb in callbacks:
                         if hasattr(cb, "on_train_end"):
-                            cb.on_train_end(self)
+                            self._call_callback(cb, "on_train_end")
             finally:
                 for cb in callbacks:
                     if hasattr(cb, "on_train_cleanup"):

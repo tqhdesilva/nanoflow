@@ -19,6 +19,31 @@ trainer:
   flow: ${flow}
   training: ${training}
   distributed: ${distributed}
+  retryer: ${retryer}
+
+retryer:
+  _target_: retry.Retryer
+  max_retries: 3
+  base_delay_seconds: 1.0
+  max_delay_seconds: 30.0
+  jitter_seconds: 0.25
+  retryable_os_errnos:
+    - EIO
+    - ESTALE
+    - ETIMEDOUT
+    - ECONNRESET
+    - ECONNABORTED
+    - ENETDOWN
+    - ENETRESET
+    - ENETUNREACH
+    - EHOSTUNREACH
+    - EAGAIN
+    - EBUSY
+  retryable_runtime_error_substrings:
+    - PytorchStreamWriter
+    - file write failed
+    - unexpected pos
+    - inline_container.cc
 
 train_loader:
   _target_: datasets.build_dataloader

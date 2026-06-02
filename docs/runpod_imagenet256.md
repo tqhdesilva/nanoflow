@@ -229,6 +229,10 @@ DRY_RUN=1 DATASET_GCS_URI=gs://<bucket>/<prefix> \
   bash scripts/runpod_prepare_network_volume.sh
 ```
 
+## Checkpoint retry policy
+
+Training config includes a Hydra-instantiated `retryer` passed into `Trainer`. It retries only allowlisted transient IO failures during epoch-end and train-end callbacks, which covers checkpoint saves. The default allowlist includes transient `OSError` errno names such as `EIO`, `ESTALE`, `ETIMEDOUT`, network reset or unreachable errors, `EAGAIN`, and `EBUSY`, plus known PyTorch checkpoint writer messages such as `PytorchStreamWriter`, `file write failed`, `unexpected pos`, and `inline_container.cc`. Unknown exceptions and non-IO failures fail fast. Tune with overrides such as `retryer.max_retries=5`.
+
 ## Current decision
 
 Do not build a custom image for the first RunPod pass. The first CPU setup task already has to hydrate the latent cache onto the network volume. Keep dependency caches and the project venv on `/workspace` so follow-up pods reuse them.
