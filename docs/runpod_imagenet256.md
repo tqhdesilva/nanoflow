@@ -13,6 +13,7 @@ Pin the CPU setup pod and the later GPU training pod to the same RunPod data cen
   .cache/uv/
   .cache/huggingface/
   .cache/torch/
+  .tmp/
   .venvs/nanoflow/
   nanoflow/
   nanoflow_runpod.env

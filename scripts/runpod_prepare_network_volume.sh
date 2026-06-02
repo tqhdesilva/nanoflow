@@ -11,8 +11,11 @@ NANOFLOW_VENV="${NANOFLOW_VENV:-${WORKSPACE}/.venvs/nanoflow}"
 UV_CACHE_DIR="${UV_CACHE_DIR:-${WORKSPACE}/.cache/uv}"
 HF_HOME="${HF_HOME:-${WORKSPACE}/.cache/huggingface}"
 TORCH_HOME="${TORCH_HOME:-${WORKSPACE}/.cache/torch}"
+TMPDIR="${NANOFLOW_TMPDIR:-${WORKSPACE}/.tmp}"
 INSTALL_GCLOUD="${INSTALL_GCLOUD:-1}"
 INSTALL_SYSTEM_PACKAGES="${INSTALL_SYSTEM_PACKAGES:-1}"
+
+export UV_CACHE_DIR HF_HOME TORCH_HOME TMPDIR
 
 : "${DATASET_GCS_URI:?set DATASET_GCS_URI to a fully qualified gs://bucket/prefix URI}"
 
@@ -123,7 +126,7 @@ clone_repo() {
 }
 
 install_python_deps() {
-  mkdir -p "$UV_CACHE_DIR" "$HF_HOME" "$TORCH_HOME" "$(dirname "$NANOFLOW_VENV")"
+  mkdir -p "$UV_CACHE_DIR" "$HF_HOME" "$TORCH_HOME" "$TMPDIR" "$(dirname "$NANOFLOW_VENV")"
   export UV_PROJECT_ENVIRONMENT="$NANOFLOW_VENV"
   cd "$NANOFLOW_REPO_DIR"
   uv sync --frozen --no-dev --no-install-project
@@ -140,6 +143,7 @@ write_env_file() {
     printf 'export UV_CACHE_DIR=%q\n' "$UV_CACHE_DIR"
     printf 'export HF_HOME=%q\n' "$HF_HOME"
     printf 'export TORCH_HOME=%q\n' "$TORCH_HOME"
+    printf 'export TMPDIR=%q\n' "$TMPDIR"
     printf 'export DATASET_GCS_URI=%q\n' "$DATASET_GCS_URI"
     printf 'export LATENT_CACHE_GCS_URI=%q\n' "$DATASET_GCS_URI"
     printf 'export NANOFLOW_GCS_BUCKET=%q\n' "$NANOFLOW_GCS_BUCKET"
@@ -182,7 +186,7 @@ PY
 
 if [ "${DRY_RUN:-0}" = "1" ]; then
   echo "would clone $NANOFLOW_REPO_URL ref $NANOFLOW_REPO_REF to $NANOFLOW_REPO_DIR"
-  echo "would create venv $NANOFLOW_VENV and run: UV_PROJECT_ENVIRONMENT=$NANOFLOW_VENV uv sync --frozen --no-dev --no-install-project"
+  echo "would create venv $NANOFLOW_VENV and run: UV_CACHE_DIR=$UV_CACHE_DIR TMPDIR=$TMPDIR UV_PROJECT_ENVIRONMENT=$NANOFLOW_VENV uv sync --frozen --no-dev --no-install-project"
   echo "would sync: gcloud storage rsync -r $DATASET_GCS_URI $DATASET_CACHE_ROOT"
   echo "would write env file: $RUNPOD_ENV_FILE"
   exit 0

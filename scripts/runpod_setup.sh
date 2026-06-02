@@ -7,9 +7,10 @@ WORKSPACE="${WORKSPACE:-/workspace}"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-${WORKSPACE}/.cache/uv}"
 export HF_HOME="${HF_HOME:-${WORKSPACE}/.cache/huggingface}"
 export TORCH_HOME="${TORCH_HOME:-${WORKSPACE}/.cache/torch}"
+export TMPDIR="${NANOFLOW_TMPDIR:-${WORKSPACE}/.tmp}"
 export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-${WORKSPACE}/.venvs/nanoflow}"
 
-mkdir -p "$UV_CACHE_DIR" "$HF_HOME" "$TORCH_HOME" "$(dirname "$UV_PROJECT_ENVIRONMENT")"
+mkdir -p "$UV_CACHE_DIR" "$HF_HOME" "$TORCH_HOME" "$TMPDIR" "$(dirname "$UV_PROJECT_ENVIRONMENT")"
 
 if ! command -v uv >/dev/null 2>&1; then
   python -m pip install --upgrade uv
