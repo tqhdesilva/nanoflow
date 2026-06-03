@@ -50,7 +50,7 @@ uv sync --frozen --no-dev --no-install-project \
   --no-install-package torchvision
 ```
 
-Then it installs the selected CUDA PyTorch wheels explicitly. The project itself is not installed as a wheel. The source is copied to `/app`, and `PYTHONPATH=/app` is set.
+Then it installs the selected CUDA PyTorch wheels explicitly. The project itself is not installed as a wheel. The source is copied to `/app`, and `PYTHONPATH=/app` is set. The image intentionally does not set `ENTRYPOINT`, because SkyPilot passes a `bash` bootstrap command to RunPod to install and start SSH before running the task.
 
 ## Smoke test as a managed job
 
