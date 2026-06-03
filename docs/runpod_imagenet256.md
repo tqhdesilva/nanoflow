@@ -2,22 +2,17 @@
 
 ## Recommendation
 
-Use a RunPod network volume as warm project storage. Run one CPU SkyPilot task in the target RunPod data center before training. That task clones NanoFlow, creates a uv virtualenv on the volume, installs project dependencies with `uv sync --no-install-project`, installs CUDA 12.4 PyTorch wheels for the current RunPod H100 driver, writes a reusable env file, and hydrates the latent cache from GCS.
+Use the custom Docker image for Python dependencies and PyTorch CUDA. Use the RunPod network volume only as warm storage for latent caches, checkpoints, logs, and model caches. Run one CPU SkyPilot task in the target RunPod data center only when the latent cache needs hydration from GCS.
 
-Pin the CPU setup pod and the later GPU training pod to the same RunPod data center as the network volume.
+Pin the cache hydration pod and the later GPU training pod to the same RunPod data center as the network volume.
 
 ## Network volume layout
 
 ```text
 /workspace/
-  .cache/uv/
-  .cache/uv/python/
   .cache/huggingface/
   .cache/torch/
   .tmp/
-  .venvs/nanoflow/
-  nanoflow/
-  nanoflow_runpod.env
   latent-caches/imagenet256/current/
   runs/
 ```
@@ -29,9 +24,9 @@ The GCS cache source is passed at launch time as a full URI through `DATASET_GCS
 - RunPod data center, for example `runpod/US/US-CA-2`.
 - Dataset cache URI, for example `gs://<bucket>/<prefix>`.
 - Optional network-volume destination path. The default is `/workspace/latent-caches/imagenet256/current`.
-- Optional `NANOFLOW_REPO_URL` and `NANOFLOW_REPO_REF` if the default repo or branch is not the one to test.
-- Optional `RUNPOD_TORCH_PACKAGES` and `RUNPOD_TORCH_INDEX_URL` if the RunPod image driver changes. The default is `torch==2.6.0+cu124 torchvision==0.21.0+cu124` from `https://download.pytorch.org/whl/cu124`.
-- GCP service account credentials with read access to the cache prefix.
+- Docker image, default `ghcr.io/tqhdesilva/nanoflow:runpod-cu124`.
+- Optional `NANOFLOW_REPO_URL` and `NANOFLOW_REPO_REF` only for the legacy volume prep script.
+- GCP service account credentials with read access to the cache prefix when hydrating data.
 
 ## RunPod launch workarounds
 
@@ -39,9 +34,9 @@ Use these checks before every RunPod launch:
 
 1. Match the exact GPU SKU. In EU-NL-1, the working H100 request was `--gpus H100-SXM:2`. A generic `--gpus H100:2` can resolve to `2x_H100_SECURE`, which may fail even when H100 SXM stock is visible in the RunPod UI.
 2. Keep the pod and volume in the same data center. The `nf-imagenet256` network volume is pinned to `runpod/NL/EU-NL-1`, so setup and training must use `--infra runpod/NL/EU-NL-1` unless a new volume is created and hydrated elsewhere.
-3. Keep uv Python installs on the network volume. Set `UV_PYTHON_INSTALL_DIR=/workspace/.cache/uv/python`; otherwise a uv virtualenv can contain symlinks to pod-local Python paths that disappear on the next pod.
-4. Use CUDA 12.4 PyTorch wheels for the current RunPod H100 driver. The scripts install `torch==2.6.0+cu124` and `torchvision==0.21.0+cu124` from `https://download.pytorch.org/whl/cu124`. The default lockfile can otherwise install CUDA 13 wheels, which fail against the current RunPod driver.
-5. Do not rely on SkyPilot autostop for RunPod. The current local SkyPilot CLI reports that autostop is unsupported for RunPod. After a smoke or pilot run, verify artifacts, then run `sky down <cluster> -y`. This preserves the network volume.
+3. Keep Python dependencies in the Docker image. Do not source `/workspace/nanoflow_runpod.env` for image-backed training, because it can point back to an old volume venv.
+4. Use the `runpod-cu124` image unless a target host has been validated with a newer CUDA runtime. The image installs `torch==2.6.0+cu124` and `torchvision==0.21.0+cu124` from `https://download.pytorch.org/whl/cu124`.
+5. Do not rely on SkyPilot autostop for RunPod. The current local SkyPilot CLI reports that autostop is unsupported for RunPod. After a non-managed smoke or pilot run, verify artifacts, then run `sky down <cluster> -y`. This preserves the network volume. Managed jobs clean up workers after completion.
 6. When reusing an already launched cluster with `sky exec`, pass the same GPU request, for example `--gpus H100-SXM:2`, so the job receives the two visible GPUs.
 
 ## Choosing a RunPod data center
@@ -148,7 +143,7 @@ Create or update the network volume in the chosen data center:
 sky volumes apply --infra runpod/<country>/<data-center> cloud/runpod/runpod-volume.yaml
 ```
 
-Prepare the volume from a CPU worker in the same data center. The setup YAML keeps requirements small (`cpus: 2+`, `memory: 8+`, `disk_size: 5`) so SkyPilot can choose an available CPU pod. The network volume mounted at `/workspace` holds the repo, venv, caches, and latent data; the pod disk is only for the container layer and apt installs.
+Prepare the volume from a CPU worker in the same data center only if the latent cache is not already present. The setup YAML keeps requirements small (`cpus: 2+`, `memory: 8+`, `disk_size: 5`) so SkyPilot can choose an available CPU pod. The network volume mounted at `/workspace` holds caches, latent data, checkpoints, and logs.
 
 ```bash
 scripts/sky_runpod_prepare_network_volume.sh \
@@ -184,16 +179,20 @@ sky launch -c nf-imagenet-prepare \
 Short GPU smoke run after the volume is prepared. The `--gpus` flag overrides the 8 GPU default in the task YAML. In EU-NL-1, request the exact SKU shown by RunPod availability, for example `H100-SXM:2`.
 
 ```bash
-sky launch -c nf-imagenet-ddp \
+PATH="$HOME/.local/skypilot-shims:$PATH" sky jobs launch \
+  -n nf-imagenet-ddp-smoke \
   --infra runpod/<country>/<data-center> \
   --gpus H100-SXM:2 \
   --env SMOKE=1 \
   --env NPROC_PER_NODE=2 \
   --env BATCH_SIZE=8 \
+  --env MAX_STEPS=20 \
+  --env DISABLE_INFERENCE=1 \
+  -y \
   cloud/runpod/imagenet256-latent-ddp.yaml
 ```
 
-SkyPilot autostop is not supported for RunPod in the current local CLI. After a smoke run, tear down the pod manually while preserving the network volume:
+Managed jobs clean up workers after completion. If using `sky launch` instead of `sky jobs launch`, tear down the pod manually while preserving the network volume:
 
 ```bash
 sky down nf-imagenet-ddp -y
@@ -202,12 +201,14 @@ sky down nf-imagenet-ddp -y
 Pilot run:
 
 ```bash
-sky launch -c nf-imagenet-ddp \
+PATH="$HOME/.local/skypilot-shims:$PATH" sky jobs launch \
+  -n nf-imagenet-ddp-pilot \
   --infra runpod/<country>/<data-center> \
+  -y \
   cloud/runpod/imagenet256-latent-ddp.yaml
 ```
 
-## Manual CPU pod preparation
+## Legacy manual CPU pod preparation
 
 Attach the RunPod network volume, open a shell, then run:
 

@@ -15,13 +15,20 @@ WORKSPACE="${WORKSPACE:-/workspace}"
 LATENT_CACHE_LINK="${LATENT_CACHE_LINK:-${DATASET_CACHE_ROOT:-${WORKSPACE}/latent-caches/imagenet256/current}}"
 RUNS_DIR="${RUNS_DIR:-${WORKSPACE}/runs}"
 
-if [ "${SKIP_SETUP:-0}" != "1" ] || { [ "${USE_PREPARED_VENV:-1}" = "1" ] && [ -n "${UV_PROJECT_ENVIRONMENT:-}" ] && [ ! -x "${UV_PROJECT_ENVIRONMENT}/bin/python" ]; }; then
+if [ "${USE_IMAGE_ENV:-0}" != "1" ] && { [ "${SKIP_SETUP:-0}" != "1" ] || { [ "${USE_PREPARED_VENV:-1}" = "1" ] && [ -n "${UV_PROJECT_ENVIRONMENT:-}" ] && [ ! -x "${UV_PROJECT_ENVIRONMENT}/bin/python" ]; }; }; then
   "$ROOT/scripts/runpod_setup.sh"
 fi
 
 PYTHON_CMD=(uv run python)
 TORCHRUN_CMD=(uv run torchrun)
-if [ "${USE_PREPARED_VENV:-1}" = "1" ] && [ -n "${UV_PROJECT_ENVIRONMENT:-}" ] && [ -x "${UV_PROJECT_ENVIRONMENT}/bin/python" ]; then
+if [ "${USE_IMAGE_ENV:-0}" = "1" ]; then
+  PYTHON_CMD=(python)
+  if command -v torchrun >/dev/null 2>&1; then
+    TORCHRUN_CMD=(torchrun)
+  else
+    TORCHRUN_CMD=(python -m torch.distributed.run)
+  fi
+elif [ "${USE_PREPARED_VENV:-1}" = "1" ] && [ -n "${UV_PROJECT_ENVIRONMENT:-}" ] && [ -x "${UV_PROJECT_ENVIRONMENT}/bin/python" ]; then
   PYTHON_CMD=("${UV_PROJECT_ENVIRONMENT}/bin/python")
   if [ -x "${UV_PROJECT_ENVIRONMENT}/bin/torchrun" ]; then
     TORCHRUN_CMD=("${UV_PROJECT_ENVIRONMENT}/bin/torchrun")

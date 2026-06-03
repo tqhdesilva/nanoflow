@@ -3,21 +3,7 @@ name: RunPod Docker image
 on:
   push:
     branches: [main]
-    paths:
-      - Dockerfile
-      - .dockerignore
-      - pyproject.toml
-      - uv.lock
-      - scripts/runpod_cuda_smoke.py
-      - .github/workflows/docker-runpod.yml
   pull_request:
-    paths:
-      - Dockerfile
-      - .dockerignore
-      - pyproject.toml
-      - uv.lock
-      - scripts/runpod_cuda_smoke.py
-      - .github/workflows/docker-runpod.yml
   workflow_dispatch:
 
 permissions:
