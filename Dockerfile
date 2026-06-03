@@ -4,8 +4,8 @@ ARG PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
 ARG PYTORCH_PACKAGES="torch==2.6.0+cu124 torchvision==0.21.0+cu124"
 
 ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
-    UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
+    UV_NO_CACHE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
     PATH="/app/.venv/bin:${PATH}"
