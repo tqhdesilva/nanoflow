@@ -11,6 +11,7 @@ eval_every: 10
 # Optional optimizer-step cap for smoke tests. null means train by epochs.
 max_steps: null
 resume: null
+run_dir: null
 run_prefix: ${dataset.name}
 
 # --- Logging & instrumentation ---

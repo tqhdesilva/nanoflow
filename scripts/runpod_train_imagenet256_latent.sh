@@ -56,6 +56,14 @@ fi
 
 mkdir -p "$RUNS_DIR"
 
+if [ -n "${TRAIN_RUN_DIR:-}" ]; then
+  resolved_train_run_dir="$TRAIN_RUN_DIR"
+elif [ "${SMOKE:-0}" != "1" ]; then
+  resolved_train_run_dir="${RUNS_DIR}/imagenet256_latent_cfg"
+else
+  resolved_train_run_dir=""
+fi
+
 if [ "${SMOKE:-0}" = "1" ]; then
   batch_size="${BATCH_SIZE:-8}"
   num_workers="${NUM_WORKERS:-2}"
@@ -83,6 +91,13 @@ args=(
   training.checkpoint_every="${CHECKPOINT_EVERY:-1}"
   training.eval_every="$eval_every"
 )
+
+if [ -n "$resolved_train_run_dir" ]; then
+  args+=(
+    training.run_dir="$resolved_train_run_dir"
+    training.resume="${TRAINING_RESUME:-auto}"
+  )
+fi
 
 if [ -n "$max_steps" ]; then
   args+=(training.max_steps="$max_steps")

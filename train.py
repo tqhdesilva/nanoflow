@@ -71,12 +71,10 @@ class Trainer:
         training,
         device: torch.device,
         distributed: Optional[str] = None,
-        retryer=None,
     ):
         self.device = device
         self.training = training
         self.flow = flow
-        self.retryer = retryer
 
         self.raw_module = model.to(device)
 
@@ -198,16 +196,6 @@ class Trainer:
         vt = self.flow.target(x_0, eps, t)
         return F.mse_loss(v_pred, vt), v_pred
 
-    def _call_callback(self, cb, hook: str) -> None:
-        method = getattr(cb, hook)
-        if self.retryer is None or hook not in {"on_train_epoch_end", "on_train_end"}:
-            method(self)
-            return
-        self.retryer.run(
-            lambda: method(self),
-            description=f"{cb.__class__.__name__}.{hook}",
-        )
-
     def fit(self, train_loader, val_loader, callbacks=None) -> None:
         callbacks = callbacks or []
         if self.lr_scheduler is None:
@@ -216,7 +204,10 @@ class Trainer:
                 self.training,
                 steps_per_epoch=len(train_loader),
             )
-        for cb in callbacks:
+        start_callbacks = sorted(
+            callbacks, key=lambda cb: 0 if isinstance(cb, CheckpointCallback) else 1
+        )
+        for cb in start_callbacks:
             if hasattr(cb, "on_train_start"):
                 cb.on_train_start(self)
         completed = False
@@ -229,7 +220,7 @@ class Trainer:
                 self.epoch += 1
                 for cb in callbacks:
                     if hasattr(cb, "on_train_epoch_end"):
-                        self._call_callback(cb, "on_train_epoch_end")
+                        cb.on_train_epoch_end(self)
 
                 if (
                     self.training.eval_every > 0
@@ -251,7 +242,7 @@ class Trainer:
                 if completed:
                     for cb in callbacks:
                         if hasattr(cb, "on_train_end"):
-                            self._call_callback(cb, "on_train_end")
+                            cb.on_train_end(self)
             finally:
                 for cb in callbacks:
                     if hasattr(cb, "on_train_cleanup"):
@@ -364,6 +355,8 @@ class Trainer:
 
 def _build_callbacks(cfg, run_dir_cb: RunDirCallback) -> list:
     writer = run_dir_cb.writer
+    if cfg.training.resume == "auto" and not run_dir_cb.stable_run_dir:
+        raise ValueError("training.resume=auto requires training.run_dir")
     ckpt_cb = CheckpointCallback(
         ckpt_dir=run_dir_cb.ckpt_dir,
         checkpoint_every=cfg.training.checkpoint_every,
@@ -409,12 +402,17 @@ def main(cfg) -> None:
         train_loader = hydra.utils.instantiate(cfg.train_loader)
         val_loader = hydra.utils.instantiate(cfg.val_loader)
 
+        if cfg.training.resume == "auto" and cfg.training.run_dir is None:
+            raise ValueError("training.resume=auto requires training.run_dir")
+
         run_dir_cb = RunDirCallback(
             runs_dir=cfg.runs_dir,
             run_prefix=cfg.training.run_prefix,
             cfg=cfg,
+            run_dir=cfg.training.run_dir,
         )
         callbacks = _build_callbacks(cfg, run_dir_cb)
+
         def _handler(sig, frame):
             print("\nSIGTERM caught, preserving latest epoch checkpoint")
             sys.exit(0)

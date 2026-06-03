@@ -232,7 +232,9 @@ DRY_RUN=1 DATASET_GCS_URI=gs://<bucket>/<prefix> \
 
 ## Checkpoint retry policy
 
-Training config includes a Hydra-instantiated `retryer` passed into `Trainer`. It retries only allowlisted transient IO failures during epoch-end and train-end callbacks, which covers checkpoint saves. The default allowlist includes transient `OSError` errno names such as `EIO`, `ESTALE`, `ETIMEDOUT`, network reset or unreachable errors, `EAGAIN`, and `EBUSY`, plus known PyTorch checkpoint writer messages such as `PytorchStreamWriter`, `file write failed`, `unexpected pos`, and `inline_container.cc`. Unknown exceptions and non-IO failures fail fast. Tune with overrides such as `retryer.max_retries=5`.
+Managed training jobs use a stable run directory plus auto resume. The RunPod launcher sets `training.run_dir=/workspace/runs/imagenet256_latent_cfg` and `training.resume=auto`, so each retry reads and writes `/workspace/runs/imagenet256_latent_cfg/checkpoints/latest.pt`. Checkpoint writes are atomic: NanoFlow saves to a temp file in the same directory, fsyncs it, then replaces `latest.pt`. On SIGTERM or preemption, training exits without a mid epoch checkpoint, so `latest.pt` remains the latest completed epoch.
+
+There is no training-level checkpoint IO retry loop. Prefer SkyPilot managed job retries for transient infra failures.
 
 ## Current decision
 

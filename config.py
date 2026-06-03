@@ -200,38 +200,6 @@ class CondOTConfig(FlowConfig):
 
 
 @dataclass
-class RetryerConfig:
-    _target_: str = "retry.Retryer"
-    max_retries: int = 3
-    base_delay_seconds: float = 1.0
-    max_delay_seconds: float = 30.0
-    jitter_seconds: float = 0.25
-    retryable_os_errnos: list[str] = field(
-        default_factory=lambda: [
-            "EIO",
-            "ESTALE",
-            "ETIMEDOUT",
-            "ECONNRESET",
-            "ECONNABORTED",
-            "ENETDOWN",
-            "ENETRESET",
-            "ENETUNREACH",
-            "EHOSTUNREACH",
-            "EAGAIN",
-            "EBUSY",
-        ]
-    )
-    retryable_runtime_error_substrings: list[str] = field(
-        default_factory=lambda: [
-            "PytorchStreamWriter",
-            "file write failed",
-            "unexpected pos",
-            "inline_container.cc",
-        ]
-    )
-
-
-@dataclass
 class TrainingConfig:
     epochs: int = 100
     batch_size: int = 128
@@ -243,6 +211,7 @@ class TrainingConfig:
     # Optional optimizer-step cap for smoke tests. None means train by epochs.
     max_steps: Optional[int] = None
     resume: Optional[str] = None
+    run_dir: Optional[str] = None
     run_prefix: str = "${dataset.name}"
     log_every: int = 50
     grad_clip: float = 1.0
@@ -276,7 +245,6 @@ class NanoFlowConfig:
     flow: FlowConfig = field(default_factory=FlowConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     distributed: Optional[str] = None
-    retryer: Optional[RetryerConfig] = None
 
 
 @dataclass
@@ -332,7 +300,6 @@ class Config:
     inference: Optional[InferenceConfig] = None
     sample_logger: Optional[SampleLoggerConfig] = None
     vae: Optional[VAEConfig] = None
-    retryer: Optional[RetryerConfig] = None
     vae_transform: Optional[VAECacheTransformConfig] = None
     device: str = "cpu"
     distributed: Optional[str] = None  # null | ddp | fsdp
@@ -469,7 +436,6 @@ def _register() -> None:
     )
     cs.store(group="flow", name="condot_schema", node=CondOTConfig)
     cs.store(group="training", name="default_schema", node=TrainingConfig)
-    cs.store(name="retryer_schema", node=RetryerConfig)
     cs.store(group="rl_training", name="default_schema", node=RLTrainingConfig)
     cs.store(
         group="reward",

@@ -102,13 +102,19 @@ Each run logs to `runs/{experiment}_{timestamp}/`.
 
 ## Checkpointing
 
-Checkpoints save every `training.checkpoint_every` epochs to `runs/{prefix}_{timestamp}/checkpoints/latest.pt`. Validation and sample logging run every `training.eval_every` epochs. Resume with:
+Checkpoints save every `training.checkpoint_every` epochs. By default each run uses `runs/{prefix}_{timestamp}/checkpoints/latest.pt`. Validation and sample logging run every `training.eval_every` epochs. Resume from an explicit checkpoint with:
 
 ```bash
 uv run python train.py training.resume=runs/{prefix}_{timestamp}/checkpoints/latest.pt
 ```
 
-On SIGTERM, training exits without writing a mid-epoch checkpoint, so `latest.pt` remains the most recent completed epoch checkpoint.
+For same-command retries, set a stable run directory and auto resume:
+
+```bash
+uv run python train.py training.run_dir=/workspace/runs/imagenet256_latent_cfg training.resume=auto
+```
+
+This reads and writes `/workspace/runs/imagenet256_latent_cfg/checkpoints/latest.pt`. On SIGTERM, training exits without writing a mid-epoch checkpoint, so `latest.pt` remains the most recent completed epoch checkpoint.
 
 ## Flow matching in brief
 

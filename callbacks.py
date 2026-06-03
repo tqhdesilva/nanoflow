@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -76,31 +77,79 @@ def _git_info() -> dict:
         return {}
 
 
+class SummaryWriterHandle:
+    """Small proxy so callbacks can share a writer opened after resume."""
+
+    def __init__(self):
+        self.writer: Optional[SummaryWriter] = None
+
+    def open(self, log_dir: Path, purge_step: Optional[int] = None) -> None:
+        kwargs = {}
+        if purge_step is not None and purge_step > 0:
+            kwargs["purge_step"] = purge_step
+        self.writer = SummaryWriter(log_dir=str(log_dir), **kwargs)
+
+    def close(self) -> None:
+        if self.writer is not None:
+            self.writer.close()
+            self.writer = None
+
+    def add_scalar(self, *args, **kwargs) -> None:
+        if self.writer is None:
+            raise RuntimeError("TensorBoard writer has not been opened")
+        self.writer.add_scalar(*args, **kwargs)
+
+    def add_image(self, *args, **kwargs) -> None:
+        if self.writer is None:
+            raise RuntimeError("TensorBoard writer has not been opened")
+        self.writer.add_image(*args, **kwargs)
+
+
 class RunDirCallback:
     """Rank-0 run directory + TensorBoard writer + metadata.yaml.
 
     Other callbacks read `.run_dir`, `.ckpt_dir`, `.writer` after init.
     """
 
-    def __init__(self, runs_dir: str, run_prefix: str, cfg: DictConfig):
+    def __init__(
+        self,
+        runs_dir: str,
+        run_prefix: str,
+        cfg: DictConfig,
+        run_dir: Optional[str] = None,
+    ):
         self.rank = _rank()
-        run_id = f"{run_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        self.run_dir = Path(runs_dir) / run_id
+        self.stable_run_dir = run_dir is not None
+        if self.stable_run_dir:
+            self.run_dir = Path(run_dir)
+        else:
+            run_id = f"{run_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            self.run_dir = Path(runs_dir) / run_id
         self.ckpt_dir = self.run_dir / "checkpoints"
         self.tb_dir = self.run_dir / "tensorboard"
-        self.writer: Optional[SummaryWriter] = None
+        self.writer: Optional[SummaryWriterHandle] = (
+            SummaryWriterHandle() if self.rank == 0 else None
+        )
         if self.rank == 0:
             self.run_dir.mkdir(parents=True, exist_ok=True)
             self.ckpt_dir.mkdir(parents=True, exist_ok=True)
             self.tb_dir.mkdir(parents=True, exist_ok=True)
             print(f"Run dir: {self.run_dir}")
-            meta = {
-                "config": OmegaConf.to_container(cfg, resolve=True),
-                "git": _git_info(),
-            }
-            with open(self.run_dir / "metadata.yaml", "w") as f:
-                yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
-            self.writer = SummaryWriter(log_dir=str(self.tb_dir))
+            metadata_path = self.run_dir / "metadata.yaml"
+            if not self.stable_run_dir or not metadata_path.exists():
+                meta = {
+                    "config": OmegaConf.to_container(cfg, resolve=True),
+                    "git": _git_info(),
+                }
+                with open(metadata_path, "w") as f:
+                    yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
+
+    def on_train_start(self, trainer) -> None:
+        if self.rank != 0 or self.writer is None:
+            return
+        step = getattr(trainer, "step", 0)
+        purge_step = step if self.stable_run_dir and step > 0 else None
+        self.writer.open(self.tb_dir, purge_step=purge_step)
 
     def on_train_cleanup(self, trainer) -> None:
         if self.writer is not None:
@@ -129,19 +178,53 @@ class CheckpointCallback:
     def save_path(self, name: str = "latest") -> Path:
         return self.ckpt_dir / f"{name}.pt"
 
+    @staticmethod
+    def _atomic_save(obj, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                torch.save(obj, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, path)
+            try:
+                dir_fd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except OSError:
+                pass
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
+
     def save(self, trainer, name: str = "latest") -> None:
         if self.rank != 0:
             return
-        torch.save(trainer.state_dict(), self.save_path(name))
+        self._atomic_save(trainer.state_dict(), self.save_path(name))
+
+    def _resume_path(self) -> Optional[Path]:
+        if not self.resume:
+            return None
+        if self.resume == "auto":
+            path = self.save_path("latest")
+            return path if path.exists() else None
+        return Path(self.resume)
 
     def on_train_start(self, trainer) -> None:
-        if not self.resume:
+        resume_path = self._resume_path()
+        if resume_path is None:
             return
-        ckpt = torch.load(self.resume, weights_only=True, map_location=trainer.device)
+        ckpt = torch.load(resume_path, weights_only=True, map_location=trainer.device)
         trainer.load_state_dict(ckpt)
         if self.rank == 0:
             epoch = ckpt.get("train_progress", {}).get("num_epochs_completed", "?")
-            print(f"Resumed from {self.resume} at epoch {epoch}")
+            print(f"Resumed from {resume_path} at epoch {epoch}")
 
     def on_train_epoch_end(self, trainer) -> None:
         epoch = trainer.epoch
@@ -170,7 +253,11 @@ class EpochSummaryCallback:
         if self.rank != 0 or self.writer is None:
             return
         print(f"Effective global batch size: {self.global_batch_size}")
-        self.writer.add_scalar("train/effective_batch_size", self.global_batch_size, 0)
+        self.writer.add_scalar(
+            "train/effective_batch_size",
+            self.global_batch_size,
+            getattr(trainer, "step", 0),
+        )
 
     def on_train_epoch_start(self, trainer) -> None:
         self._epoch_start = time.perf_counter()
@@ -241,7 +328,7 @@ class LRMonitorCallback:
         if self.rank != 0 or self.writer is None or trainer.optimizer is None:
             return
         lr = trainer.optimizer.param_groups[0]["lr"]
-        self.writer.add_scalar("train/lr", lr, 0)
+        self.writer.add_scalar("train/lr", lr, getattr(trainer, "step", 0))
 
     def on_train_step_end(self, trainer) -> None:
         if self.rank != 0 or self.writer is None or trainer.optimizer is None:
