@@ -34,3 +34,11 @@ inference:
   sampler:
     num_steps: 200
     latent_shape: [4, 32, 32]
+
+resources:
+  infra: runpod
+  accelerators: H100-SXM:1
+  image_id: docker:ghcr.io/tqhdesilva/nanoflow:runpod-cu124
+  disk_size: 100
+  job_recovery:
+    max_restarts_on_errors: 5
