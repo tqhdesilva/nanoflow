@@ -92,6 +92,10 @@ args=(
   training.eval_every="$eval_every"
 )
 
+if [ -n "${LR:-}" ]; then
+  args+=(training.lr="$LR")
+fi
+
 if [ -n "$resolved_train_run_dir" ]; then
   args+=(
     training.run_dir="$resolved_train_run_dir"
