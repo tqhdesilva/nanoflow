@@ -37,7 +37,7 @@ Use these checks before every RunPod launch:
 3. Keep Python dependencies in the Docker image. Do not source `/workspace/nanoflow_runpod.env` for image-backed training, because it can point back to an old volume venv.
 4. Use the `runpod-cu124` image unless a target host has been validated with a newer CUDA runtime. The image installs `torch==2.6.0+cu124` and `torchvision==0.21.0+cu124` from `https://download.pytorch.org/whl/cu124`.
 5. Do not rely on SkyPilot autostop for RunPod. The current local SkyPilot CLI reports that autostop is unsupported for RunPod. After a non-managed smoke or pilot run, verify artifacts, then run `sky down <cluster> -y`. This preserves the network volume. Managed jobs clean up workers after completion.
-6. When reusing an already launched cluster with `sky exec`, pass the same GPU request, for example `--gpus H100-SXM:2`, so the job receives the two visible GPUs.
+6. When reusing an already launched cluster with `sky exec`, pass the same GPU request, for example `--gpus H100-SXM:1`, so the job receives the visible GPU.
 
 ## Choosing a RunPod data center
 
@@ -176,15 +176,15 @@ sky launch -c nf-imagenet-prepare \
   cloud/runpod/prepare-network-volume.yaml
 ```
 
-Short GPU smoke run after the volume is prepared. The `--gpus` flag overrides the 8 GPU default in the task YAML. In EU-NL-1, request the exact SKU shown by RunPod availability, for example `H100-SXM:2`.
+Short GPU smoke run after the volume is prepared. In EU-NL-1, request the exact SKU shown by RunPod availability, for example `H100-SXM:1`.
 
 ```bash
 PATH="$HOME/.local/skypilot-shims:$PATH" sky jobs launch \
-  -n nf-imagenet-ddp-smoke \
+  -n nf-imagenet-train-smoke \
   --infra runpod/<country>/<data-center> \
-  --gpus H100-SXM:2 \
+  --gpus H100-SXM:1 \
   --env SMOKE=1 \
-  --env NPROC_PER_NODE=2 \
+  --env NPROC_PER_NODE=1 \
   --env BATCH_SIZE=8 \
   --env MAX_STEPS=20 \
   --env DISABLE_INFERENCE=1 \
@@ -202,7 +202,7 @@ Pilot run:
 
 ```bash
 PATH="$HOME/.local/skypilot-shims:$PATH" sky jobs launch \
-  -n nf-imagenet-ddp-pilot \
+  -n nf-imagenet-train-pilot \
   --infra runpod/<country>/<data-center> \
   -y \
   cloud/runpod/imagenet256-latent-ddp.yaml

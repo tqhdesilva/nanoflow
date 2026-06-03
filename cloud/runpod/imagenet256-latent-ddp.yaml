@@ -1,12 +1,12 @@
-name: nf-imagenet-ddp
+name: nf-imagenet-train
 
 # Launch after the network volume has hydrated latents at LATENT_CACHE_LINK.
 # Pass the same RunPod data center used for the network volume:
-#   sky launch -c nf-imagenet-ddp --infra runpod/<country>/<data-center> cloud/runpod/imagenet256-latent-ddp.yaml
+#   sky jobs launch -n nf-imagenet-train --infra runpod/<country>/<data-center> cloud/runpod/imagenet256-latent-ddp.yaml
 
 resources:
   infra: runpod
-  accelerators: H100:8
+  accelerators: H100-SXM:1
   image_id: docker:ghcr.io/tqhdesilva/nanoflow:runpod-cu124
   disk_size: 100
 
@@ -22,7 +22,7 @@ envs:
   LOAD_RUNPOD_ENV: "0"
   USE_IMAGE_ENV: "1"
   SKIP_SETUP: "1"
-  NPROC_PER_NODE: "8"
+  NPROC_PER_NODE: "1"
   BATCH_SIZE: "64"
   NUM_WORKERS: "8"
   PRECISION: bf16
