@@ -333,6 +333,7 @@ class Trainer:
         }
         if self.ema_model is not None:
             ckpt["ema_state"] = self.ema_model.module.state_dict()
+            ckpt["ema_n_averaged"] = int(self.ema_model.n_averaged.item())
         if self.scaler is not None:
             ckpt["scaler_state"] = self.scaler.state_dict()
         return ckpt
@@ -349,6 +350,8 @@ class Trainer:
         self.losses = list(ckpt.get("losses", []))
         if ckpt.get("ema_state") and self.ema_model is not None:
             self.ema_model.module.load_state_dict(ckpt["ema_state"])
+            ema_n = int(ckpt.get("ema_n_averaged", 1))
+            self.ema_model.n_averaged.fill_(ema_n)
         if ckpt.get("scaler_state") and self.scaler is not None:
             self.scaler.load_state_dict(ckpt["scaler_state"])
 

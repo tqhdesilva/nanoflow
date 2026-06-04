@@ -176,6 +176,29 @@ class TrainingControlsTest(unittest.TestCase):
             )
             for name, value in restored.ema_model.module.state_dict().items():
                 torch.testing.assert_close(value, ckpt["ema_state"][name])
+            self.assertEqual(
+                int(restored.ema_model.n_averaged.item()), ckpt["ema_n_averaged"]
+            )
+
+    def test_legacy_ema_resume_keeps_average_initialized(self):
+        data = TensorDataset(torch.randn(6, 2))
+        loader = DataLoader(data, batch_size=2, shuffle=False)
+        training = TrainingConfig(
+            epochs=1,
+            batch_size=2,
+            ema_decay=0.9,
+            eval_every=0,
+            checkpoint_every=1,
+        )
+        trainer = self._make_toy_trainer(training)
+        trainer.fit(loader, loader)
+        ckpt = trainer.state_dict()
+        del ckpt["ema_n_averaged"]
+
+        restored = self._make_toy_trainer(training)
+        restored.load_state_dict(ckpt)
+
+        self.assertEqual(int(restored.ema_model.n_averaged.item()), 1)
 
     def test_explicit_resume_path_still_loads_checkpoint(self):
         with tempfile.TemporaryDirectory() as tmp:
