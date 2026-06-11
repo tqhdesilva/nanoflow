@@ -157,6 +157,21 @@ class ClassCondUNetImageNet256LatentConfig(ModelConfig):
     num_classes: int = 1000
 
 
+@dataclass
+class ClassCondDiTImageNet256LatentConfig(ModelConfig):
+    _target_: str = "models_dit.ClassCondDiT"
+    _recursive_: bool = True
+    in_ch: int = 4
+    latent_size: int = 32
+    patch_size: int = 2
+    num_classes: int = 1000
+    backbone: Any = MISSING
+    time_dim: Optional[int] = None
+    class_dim: Optional[int] = None
+    pos_embedding: Any = MISSING
+    use_gradient_checkpointing: bool = False
+
+
 # VAE group
 
 
@@ -427,6 +442,21 @@ def _register() -> None:
         group="model",
         name="classcond_unet_imagenet256_latent_schema",
         node=ClassCondUNetImageNet256LatentConfig,
+    )
+    cs.store(
+        group="model",
+        name="classcond_dit_imagenet256_latent_tiny_schema",
+        node=ClassCondDiTImageNet256LatentConfig,
+    )
+    cs.store(
+        group="model",
+        name="classcond_dit_imagenet256_latent_b2_schema",
+        node=ClassCondDiTImageNet256LatentConfig,
+    )
+    cs.store(
+        group="model",
+        name="classcond_dit_imagenet256_latent_m2_schema",
+        node=ClassCondDiTImageNet256LatentConfig,
     )
     cs.store(group="vae", name="vae_schema", node=VAEConfig)
     cs.store(

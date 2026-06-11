@@ -1,0 +1,37 @@
+# @package _global_
+defaults:
+  - override /dataset: imagenet256_latent_mmap
+  - override /model: classcond_dit_imagenet256_latent_tiny
+  - override /vae: sd_vae_ft_ema
+
+training:
+  run_prefix: imagenet256_latent_dit_smoke
+  batch_size: 2
+  epochs: 1
+  lr: 1.0e-4
+  warmup_epochs: 0
+  checkpoint_every: 1
+  eval_every: 1
+  max_steps: 1
+  num_workers: 0
+  precision: null
+  ema_decay: 0.0
+  p_uncond: 0.1
+
+sample_logger:
+  n_samples: 4
+  num_steps: 2
+  latent_shape: [4, 32, 32]
+  guidance_scale: 2.0
+
+inference:
+  n_samples: 4
+  save_path: imagenet256_latent_dit_smoke_samples.png
+  class_sampler:
+    num_classes: 1000
+    guidance_scale: 3.0
+    probs: null
+    class_names: null
+  sampler:
+    num_steps: 2
+    latent_shape: [4, 32, 32]
