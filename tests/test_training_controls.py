@@ -8,7 +8,7 @@ from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, TensorDataset
 
 from callbacks import CheckpointCallback, RunDirCallback
-from config import TrainingConfig
+from config import InitFromWeights, LossMode, TrainingConfig
 from flow import CondOT
 from models import MLP
 from train import Trainer, _build_callbacks
@@ -49,6 +49,39 @@ class LifecycleRecorder:
         self.cleanup_calls += 1
 
 
+class ZeroTargetFlow:
+    def interpolate(self, x_0, eps, t):
+        return x_0
+
+    def target(self, x_0, eps, t):
+        return torch.zeros_like(x_0)
+
+
+class AuxMaskModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.tensor(1.0))
+
+    def forward(self, x, t, labels=None, return_aux=False):
+        pred = torch.full_like(x, 100.0) * self.weight
+        pred[:, :, :, : x.size(-1) // 2] = 0
+        loss_mask = torch.zeros(x.size(0), 1, x.size(2), x.size(3), device=x.device)
+        loss_mask[:, :, :, : x.size(-1) // 2] = 1
+        if return_aux:
+            return {"pred": pred, "loss_mask": loss_mask}
+        return {"pred": pred, "loss_mask": loss_mask}
+
+
+class ActiveMaskerModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.tensor(1.0))
+        self.masker = object()
+
+    def forward(self, x, t):
+        return torch.zeros_like(x) * self.weight
+
+
 class TrainingControlsTest(unittest.TestCase):
     def _make_toy_trainer(self, training):
         return Trainer(
@@ -57,6 +90,104 @@ class TrainingControlsTest(unittest.TestCase):
             training=training,
             device=torch.device("cpu"),
         )
+
+    def test_loss_mode_is_enum_validated(self):
+        cfg = OmegaConf.structured(TrainingConfig)
+        self.assertEqual(cfg.loss_mode, LossMode.mse)
+
+        cfg.loss_mode = "masked_mse"
+        self.assertEqual(cfg.loss_mode, LossMode.masked_mse)
+
+        with self.assertRaises(Exception):
+            cfg.loss_mode = "bad"
+
+    def test_init_from_weights_is_enum_validated(self):
+        cfg = OmegaConf.structured(TrainingConfig)
+        self.assertEqual(cfg.init_from_weights, InitFromWeights.raw)
+
+        cfg.init_from_weights = "ema"
+        self.assertEqual(cfg.init_from_weights, InitFromWeights.ema)
+
+        with self.assertRaises(Exception):
+            cfg.init_from_weights = "bad"
+
+    def test_masked_mse_uses_aux_loss_mask(self):
+        training = TrainingConfig(
+            epochs=1,
+            batch_size=2,
+            eval_every=0,
+            checkpoint_every=0,
+            loss_mode=LossMode.masked_mse,
+        )
+        trainer = Trainer(
+            model=AuxMaskModel(),
+            flow=ZeroTargetFlow(),
+            training=training,
+            device=torch.device("cpu"),
+        )
+        x = torch.randn(2, 1, 4, 4)
+
+        loss, pred = trainer._compute_loss((x,))
+
+        self.assertEqual(loss.item(), 0.0)
+        self.assertEqual(pred.shape, x.shape)
+
+    def test_masked_mse_requires_aux_output(self):
+        training = TrainingConfig(
+            epochs=1,
+            batch_size=2,
+            eval_every=0,
+            checkpoint_every=0,
+            loss_mode=LossMode.masked_mse,
+        )
+        trainer = Trainer(
+            model=MLP(hidden_dim=8, num_layers=1, time_dim=8),
+            flow=ZeroTargetFlow(),
+            training=training,
+            device=torch.device("cpu"),
+        )
+        x = torch.randn(2, 2)
+
+        with self.assertRaisesRegex(ValueError, "masked_mse"):
+            trainer._compute_loss((x,))
+
+    def test_mse_rejects_dict_output(self):
+        training = TrainingConfig(
+            epochs=1,
+            batch_size=2,
+            eval_every=0,
+            checkpoint_every=0,
+            loss_mode=LossMode.mse,
+        )
+        trainer = Trainer(
+            model=AuxMaskModel(),
+            flow=ZeroTargetFlow(),
+            training=training,
+            device=torch.device("cpu"),
+        )
+        x = torch.randn(2, 1, 4, 4)
+
+        with self.assertRaisesRegex(ValueError, "loss_mode=mse"):
+            trainer._compute_loss((x,))
+
+    def test_mse_rejects_active_masker_in_training(self):
+        training = TrainingConfig(
+            epochs=1,
+            batch_size=2,
+            eval_every=0,
+            checkpoint_every=0,
+            loss_mode=LossMode.mse,
+        )
+        trainer = Trainer(
+            model=ActiveMaskerModel(),
+            flow=ZeroTargetFlow(),
+            training=training,
+            device=torch.device("cpu"),
+        )
+        x = torch.randn(2, 1, 4, 4)
+
+        with self.assertRaisesRegex(ValueError, "masker"):
+            trainer._compute_loss((x,))
 
     def test_explicit_run_dir_overrides_generated_run_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -199,6 +330,117 @@ class TrainingControlsTest(unittest.TestCase):
         restored.load_state_dict(ckpt)
 
         self.assertEqual(int(restored.ema_model.n_averaged.item()), 1)
+
+    def test_init_from_loads_model_weights_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = TensorDataset(torch.randn(4, 2))
+            loader = DataLoader(data, batch_size=2, shuffle=False)
+            training = TrainingConfig(
+                epochs=1,
+                batch_size=2,
+                eval_every=0,
+                checkpoint_every=1,
+            )
+            source = self._make_toy_trainer(training)
+            source.fit(loader, loader)
+            ckpt_path = Path(tmp) / "seed.pt"
+            torch.save(source.state_dict(), ckpt_path)
+
+            restored = self._make_toy_trainer(training)
+            CheckpointCallback(
+                Path(tmp) / "dest" / "checkpoints",
+                1,
+                init_from=str(ckpt_path),
+            ).on_train_start(restored)
+
+            self.assertEqual(restored.epoch, 0)
+            self.assertEqual(restored.step, 0)
+            self.assertEqual(restored.losses, [])
+            self.assertEqual(restored.optimizer.state_dict()["state"], {})
+            for name, value in restored.raw_module.state_dict().items():
+                torch.testing.assert_close(value, source.raw_module.state_dict()[name])
+
+    def test_init_from_ema_requires_ema_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            training = TrainingConfig(
+                epochs=1,
+                batch_size=2,
+                eval_every=0,
+                checkpoint_every=1,
+            )
+            source = self._make_toy_trainer(training)
+            ckpt_path = Path(tmp) / "seed.pt"
+            torch.save(source.state_dict(), ckpt_path)
+            restored = self._make_toy_trainer(training)
+
+            with self.assertRaisesRegex(ValueError, "EMA"):
+                CheckpointCallback(
+                    Path(tmp) / "dest" / "checkpoints",
+                    1,
+                    init_from=str(ckpt_path),
+                    init_from_weights="ema",
+                ).on_train_start(restored)
+
+    def test_init_from_ema_loads_ema_weights_and_resets_live_ema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            training = TrainingConfig(
+                epochs=1,
+                batch_size=2,
+                ema_decay=0.9,
+                eval_every=0,
+                checkpoint_every=1,
+            )
+            source = self._make_toy_trainer(training)
+            ckpt = source.state_dict()
+            ckpt["ema_state"] = {
+                name: torch.full_like(value, 3.0)
+                for name, value in ckpt["model_state"].items()
+            }
+            ckpt_path = Path(tmp) / "seed.pt"
+            torch.save(ckpt, ckpt_path)
+
+            restored = self._make_toy_trainer(training)
+            CheckpointCallback(
+                Path(tmp) / "dest" / "checkpoints",
+                1,
+                init_from=str(ckpt_path),
+                init_from_weights="ema",
+            ).on_train_start(restored)
+
+            for value in restored.raw_module.state_dict().values():
+                torch.testing.assert_close(value, torch.full_like(value, 3.0))
+            for value in restored.ema_model.module.state_dict().values():
+                torch.testing.assert_close(value, torch.full_like(value, 3.0))
+            self.assertEqual(int(restored.ema_model.n_averaged.item()), 0)
+
+    def test_auto_resume_wins_over_init_from(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_ckpt_dir = Path(tmp) / "run" / "checkpoints"
+            seed_ckpt = Path(tmp) / "seed.pt"
+            training = TrainingConfig(
+                epochs=1,
+                batch_size=2,
+                eval_every=0,
+                checkpoint_every=1,
+            )
+            resume_source = self._make_toy_trainer(training)
+            resume_source.epoch = 5
+            resume_source.step = 9
+            CheckpointCallback(run_ckpt_dir, checkpoint_every=1).save(resume_source)
+
+            init_source = self._make_toy_trainer(training)
+            torch.save(init_source.state_dict(), seed_ckpt)
+
+            restored = self._make_toy_trainer(training)
+            CheckpointCallback(
+                run_ckpt_dir,
+                1,
+                resume="auto",
+                init_from=str(seed_ckpt),
+            ).on_train_start(restored)
+
+            self.assertEqual(restored.epoch, 5)
+            self.assertEqual(restored.step, 9)
 
     def test_explicit_resume_path_still_loads_checkpoint(self):
         with tempfile.TemporaryDirectory() as tmp:

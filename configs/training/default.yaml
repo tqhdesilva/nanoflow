@@ -23,3 +23,9 @@ ema_decay: 0
 
 # Precision (fp32, fp16, bf16), autocast plus GradScaler for fp16 only.
 precision: null
+
+# Loss mode enum: mse | masked_mse.
+loss_mode: mse
+# Model-only initialization controls.
+init_from: null
+init_from_weights: raw

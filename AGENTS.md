@@ -87,6 +87,7 @@ Sample PNGs are written when `inference.save_path` is set (each experiment YAML 
 - Data scaled to [-1, 1]. Noise is N(0, I). Time t ∈ [0, 1] where t=0 is noise, t=1 is data.
 - UNet uses GroupNorm (not BatchNorm).
 - Use `uv run python` to run (not bare `python`).
+- Python docstrings follow Google style.
 
 ## Run layout
 

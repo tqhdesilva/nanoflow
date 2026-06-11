@@ -4,11 +4,15 @@ import unittest
 import torch
 
 import config as _config  # noqa: F401
+from config import LossMode
 from models_dit import (
+    ClassCondDeferredMaskingDiT,
     ClassCondDiT,
     DenseFFN,
     DiTBackbone,
     DiTBlock,
+    PatchMixer,
+    RandomTokenMasker,
     RoPE2D,
     SelfAttention,
     apply_2d_rope,
@@ -40,6 +44,61 @@ def _make_model(
         time_dim=hidden_size,
         class_dim=hidden_size,
     )
+
+
+class SpyPatchMixer(PatchMixer):
+    def __init__(self, hidden_size):
+        torch.nn.Module.__init__(self)
+        self.hidden_size = hidden_size
+        self.use_gradient_checkpointing = False
+        self.blocks = torch.nn.ModuleList()
+        self.last_num_tokens = None
+
+    def forward(self, x, cond, coords=None, pos_embedding=None):
+        self.last_num_tokens = x.size(1)
+        return x
+
+
+class SpyBackbone(DiTBackbone):
+    def __init__(self, hidden_size):
+        torch.nn.Module.__init__(self)
+        self.hidden_size = hidden_size
+        self.use_gradient_checkpointing = False
+        self.blocks = torch.nn.ModuleList()
+        self.last_num_tokens = None
+        self.last_coords = None
+
+    def forward(self, x, cond, coords=None, pos_embedding=None):
+        self.last_num_tokens = x.size(1)
+        self.last_coords = coords.detach().clone() if coords is not None else None
+        return x
+
+
+def _make_deferred_model(
+    *,
+    in_ch=4,
+    latent_size=32,
+    patch_size=2,
+    hidden_size=32,
+    num_classes=1000,
+    masker=None,
+    patch_mixer="spy",
+):
+    if patch_mixer == "spy":
+        patch_mixer = SpyPatchMixer(hidden_size)
+    backbone = SpyBackbone(hidden_size)
+    model = ClassCondDeferredMaskingDiT(
+        in_ch=in_ch,
+        latent_size=latent_size,
+        patch_size=patch_size,
+        num_classes=num_classes,
+        patch_mixer=patch_mixer,
+        masker=masker,
+        backbone=backbone,
+        time_dim=hidden_size,
+        class_dim=hidden_size,
+    )
+    return model
 
 
 class DiTModelTest(unittest.TestCase):
@@ -104,6 +163,123 @@ class DiTModelTest(unittest.TestCase):
         self.assertTrue(torch.allclose(q_rot[0, 1, :, 4:], q[0, 1, :, 4:]))
         self.assertTrue(torch.allclose(q_rot[0, 2, :, :4], q[0, 2, :, :4]))
         self.assertFalse(torch.allclose(q_rot[0, 2, :, 4:], q[0, 2, :, 4:]))
+
+    def test_apply_2d_rope_accepts_per_sample_coordinates(self):
+        q = torch.ones(2, 2, 1, 8)
+        k = torch.ones(2, 2, 1, 8)
+        coords = torch.tensor(
+            [
+                [[0, 0], [1, 0]],
+                [[0, 0], [0, 1]],
+            ]
+        )
+        q_rot, k_rot = apply_2d_rope(q, k, coords, base=10.0)
+        self.assertEqual(q_rot.shape, q.shape)
+        self.assertEqual(k_rot.shape, k.shape)
+        self.assertFalse(torch.allclose(q_rot[0, 1, :, :4], q[0, 1, :, :4]))
+        self.assertTrue(torch.allclose(q_rot[0, 1, :, 4:], q[0, 1, :, 4:]))
+        self.assertTrue(torch.allclose(q_rot[1, 1, :, :4], q[1, 1, :, :4]))
+        self.assertFalse(torch.allclose(q_rot[1, 1, :, 4:], q[1, 1, :, 4:]))
+
+    def test_random_token_masker_keeps_expected_count_and_coords(self):
+        tokens = torch.randn(2, 256, 8)
+        coords = build_2d_patch_coords(16, 16)
+        masker = RandomTokenMasker(mask_ratio=0.75)
+        out = masker(tokens, coords)
+
+        self.assertEqual(out.tokens.shape, (2, 64, 8))
+        self.assertEqual(out.coords.shape, (2, 64, 2))
+        self.assertEqual(out.keep_indices.shape, (2, 64))
+        self.assertEqual(out.keep_mask.shape, (2, 256))
+        self.assertTrue(torch.all(out.keep_mask.sum(dim=1) == 64))
+        gathered = coords.to(out.keep_indices.device)[out.keep_indices]
+        self.assertTrue(torch.equal(out.coords.cpu(), gathered.cpu()))
+
+    def test_deferred_model_masks_backbone_tokens_only_in_training(self):
+        model = _make_deferred_model(masker=RandomTokenMasker(mask_ratio=0.75))
+        model.train()
+        x = torch.randn(2, 4, 32, 32)
+        t = torch.rand(2)
+        y = model(x, t, torch.tensor([1, model.null_token]))
+
+        self.assertEqual(y.shape, x.shape)
+        self.assertEqual(model.patch_mixer.last_num_tokens, 256)
+        self.assertEqual(model.backbone.last_num_tokens, 64)
+        self.assertEqual(model.backbone.last_coords.shape, (2, 64, 2))
+
+        model.eval()
+        y = model(x, t, torch.tensor([1, model.null_token]))
+        self.assertEqual(y.shape, x.shape)
+        self.assertEqual(model.backbone.last_num_tokens, 256)
+        self.assertEqual(model.backbone.last_coords.shape, (256, 2))
+
+    def test_deferred_model_without_masker_keeps_all_tokens_in_training(self):
+        model = _make_deferred_model(masker=None)
+        model.train()
+        x = torch.randn(2, 4, 32, 32)
+        t = torch.rand(2)
+        y = model(x, t, torch.tensor([1, 2]))
+
+        self.assertEqual(y.shape, x.shape)
+        self.assertEqual(model.backbone.last_num_tokens, 256)
+        self.assertEqual(model.backbone.last_coords.shape, (256, 2))
+
+    def test_deferred_model_allows_no_patch_mixer(self):
+        model = _make_deferred_model(
+            hidden_size=32,
+            masker=RandomTokenMasker(mask_ratio=0.75),
+            patch_mixer=None,
+        )
+        model.train()
+        x = torch.randn(2, 4, 32, 32)
+        y = model(x, torch.rand(2), torch.tensor([1, 2]))
+
+        self.assertEqual(y.shape, x.shape)
+        self.assertIsNone(model.patch_mixer)
+        self.assertEqual(model.backbone.last_num_tokens, 64)
+
+    def test_deferred_aux_loss_mask_is_image_compatible(self):
+        model = _make_deferred_model(
+            in_ch=1,
+            latent_size=4,
+            patch_size=2,
+            hidden_size=8,
+            num_classes=2,
+            masker=RandomTokenMasker(mask_ratio=0.5),
+        )
+        model.train()
+        x = torch.randn(1, 1, 4, 4)
+        out = model(x, torch.rand(1), torch.tensor([1]), return_aux=True)
+
+        self.assertEqual(set(out.keys()), {"pred", "loss_mask"})
+        self.assertEqual(out["pred"].shape, x.shape)
+        self.assertEqual(out["loss_mask"].shape, (1, 1, 4, 4))
+        self.assertEqual(out["loss_mask"].sum().item(), 8.0)
+        self.assertTrue(torch.all((out["loss_mask"] == 0) | (out["loss_mask"] == 1)))
+
+        model.eval()
+        out = model(x, torch.rand(1), torch.tensor([1]), return_aux=True)
+        self.assertTrue(
+            torch.equal(out["loss_mask"], torch.ones_like(out["loss_mask"]))
+        )
+
+    def test_deferred_masked_checkpoint_loads_without_masker(self):
+        masked = _make_deferred_model(masker=RandomTokenMasker(mask_ratio=0.75))
+        unmasked = _make_deferred_model(masker=None)
+        missing, unexpected = unmasked.load_state_dict(masked.state_dict())
+        self.assertEqual(missing, [])
+        self.assertEqual(unexpected, [])
+
+    def test_deferred_masked_loss_is_finite_with_null_labels(self):
+        model = _make_deferred_model(masker=RandomTokenMasker(mask_ratio=0.75))
+        model.train()
+        x = torch.randn(3, 4, 32, 32)
+        labels = torch.tensor([0, model.null_token, 999])
+        out = model(x, torch.rand(3), labels, return_aux=True)
+        target = torch.randn_like(out["pred"])
+        mask = out["loss_mask"].expand_as(out["pred"])
+        loss = ((out["pred"] - target).pow(2) * mask).sum() / mask.sum()
+        self.assertTrue(torch.isfinite(loss))
 
     def test_forward_shape_with_normal_and_null_labels(self):
         model = _make_model(
@@ -200,6 +376,47 @@ class DiTModelTest(unittest.TestCase):
         self.assertEqual(cfg.model.num_classes, cfg.dataset.num_classes)
         self.assertEqual(cfg.model.num_classes, cfg.inference.class_sampler.num_classes)
         self.assertIsNotNone(cfg.training.p_uncond)
+
+    def test_hydra_deferred_masking_smoke_config_materializes(self):
+        from hydra import compose, initialize_config_dir
+        from hydra.core.global_hydra import GlobalHydra
+        from hydra.utils import instantiate
+
+        GlobalHydra.instance().clear()
+        config_dir = os.path.abspath("configs")
+        with initialize_config_dir(config_dir=config_dir, version_base=None):
+            cfg = compose(
+                config_name="config",
+                overrides=["experiment=imagenet256_latent_dit_masked_smoke"],
+            )
+
+        self.assertEqual(cfg.model._target_, "models_dit.ClassCondDeferredMaskingDiT")
+        self.assertTrue(cfg.model._recursive_)
+        self.assertEqual(cfg.model.patch_mixer._target_, "models_dit.PatchMixer")
+        self.assertEqual(cfg.model.masker._target_, "models_dit.RandomTokenMasker")
+        self.assertEqual(cfg.model.masker.mask_ratio, 0.75)
+        self.assertEqual(cfg.training.loss_mode, LossMode.masked_mse)
+
+        model = instantiate(cfg.model)
+        self.assertIsInstance(model, ClassCondDeferredMaskingDiT)
+        self.assertIsInstance(model.patch_mixer, PatchMixer)
+        self.assertIsInstance(model.masker, RandomTokenMasker)
+        self.assertIsInstance(model.backbone, DiTBackbone)
+
+        x = torch.randn(2, *cfg.dataset.latent_shape)
+        labels = torch.tensor([0, model.null_token])
+        model.train()
+        out = model(x, torch.rand(2), labels, return_aux=True)
+        self.assertEqual(out["pred"].shape, x.shape)
+        self.assertEqual(out["loss_mask"].shape, (2, 1, 32, 32))
+
+        from inference import guided_euler_sample
+
+        model.eval()
+        samples = guided_euler_sample(
+            model, x, num_steps=2, cond=labels, guidance_scale=2.0
+        )
+        self.assertEqual(samples.shape, x.shape)
 
 
 if __name__ == "__main__":

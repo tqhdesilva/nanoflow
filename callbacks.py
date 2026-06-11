@@ -169,11 +169,15 @@ class CheckpointCallback:
         ckpt_dir: Path,
         checkpoint_every: int,
         resume: Optional[str] = None,
+        init_from: Optional[str] = None,
+        init_from_weights: str = "raw",
     ):
         self.rank = _rank()
         self.ckpt_dir = ckpt_dir
         self.checkpoint_every = checkpoint_every
         self.resume = resume
+        self.init_from = init_from
+        self.init_from_weights = init_from_weights
 
     def save_path(self, name: str = "latest") -> Path:
         return self.ckpt_dir / f"{name}.pt"
@@ -218,13 +222,27 @@ class CheckpointCallback:
 
     def on_train_start(self, trainer) -> None:
         resume_path = self._resume_path()
-        if resume_path is None:
+        if resume_path is not None:
+            ckpt = torch.load(
+                resume_path, weights_only=True, map_location=trainer.device
+            )
+            trainer.load_state_dict(ckpt)
+            if self.rank == 0:
+                epoch = ckpt.get("train_progress", {}).get("num_epochs_completed", "?")
+                print(f"Resumed from {resume_path} at epoch {epoch}")
             return
-        ckpt = torch.load(resume_path, weights_only=True, map_location=trainer.device)
-        trainer.load_state_dict(ckpt)
+        if self.init_from is None:
+            return
+        init_path = Path(self.init_from)
+        ckpt = torch.load(init_path, weights_only=True, map_location=trainer.device)
+        weights = (
+            self.init_from_weights.value
+            if hasattr(self.init_from_weights, "value")
+            else self.init_from_weights
+        )
+        trainer.load_model_weights(ckpt, weights)
         if self.rank == 0:
-            epoch = ckpt.get("train_progress", {}).get("num_epochs_completed", "?")
-            print(f"Resumed from {resume_path} at epoch {epoch}")
+            print(f"Initialized model weights from {init_path} ({weights})")
 
     def on_train_epoch_end(self, trainer) -> None:
         epoch = trainer.epoch

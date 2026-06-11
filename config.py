@@ -1,6 +1,7 @@
 """Structured config schema for NanoFlow. Validated by Hydra at startup."""
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Optional
 
 from hydra.core.config_store import ConfigStore
@@ -172,6 +173,23 @@ class ClassCondDiTImageNet256LatentConfig(ModelConfig):
     use_gradient_checkpointing: bool = False
 
 
+@dataclass
+class ClassCondDeferredMaskingDiTImageNet256LatentConfig(ModelConfig):
+    _target_: str = "models_dit.ClassCondDeferredMaskingDiT"
+    _recursive_: bool = True
+    in_ch: int = 4
+    latent_size: int = 32
+    patch_size: int = 2
+    num_classes: int = 1000
+    patch_mixer: Any = MISSING
+    masker: Optional[Any] = None
+    backbone: Any = MISSING
+    time_dim: Optional[int] = None
+    class_dim: Optional[int] = None
+    pos_embedding: Any = MISSING
+    use_gradient_checkpointing: bool = False
+
+
 # VAE group
 
 
@@ -214,6 +232,16 @@ class CondOTConfig(FlowConfig):
 # Training group
 
 
+class LossMode(str, Enum):
+    mse = "mse"
+    masked_mse = "masked_mse"
+
+
+class InitFromWeights(str, Enum):
+    raw = "raw"
+    ema = "ema"
+
+
 @dataclass
 class TrainingConfig:
     epochs: int = 100
@@ -234,6 +262,9 @@ class TrainingConfig:
     num_workers: int = 0
     precision: Optional[str] = None
     p_uncond: Optional[float] = None
+    loss_mode: LossMode = LossMode.mse
+    init_from: Optional[str] = None
+    init_from_weights: InitFromWeights = InitFromWeights.raw
 
 
 # Sampling / inference
@@ -457,6 +488,21 @@ def _register() -> None:
         group="model",
         name="classcond_dit_imagenet256_latent_m2_schema",
         node=ClassCondDiTImageNet256LatentConfig,
+    )
+    cs.store(
+        group="model",
+        name="classcond_deferred_dit_imagenet256_latent_tiny_schema",
+        node=ClassCondDeferredMaskingDiTImageNet256LatentConfig,
+    )
+    cs.store(
+        group="model",
+        name="classcond_deferred_dit_imagenet256_latent_b2_schema",
+        node=ClassCondDeferredMaskingDiTImageNet256LatentConfig,
+    )
+    cs.store(
+        group="model",
+        name="classcond_deferred_dit_imagenet256_latent_m2_schema",
+        node=ClassCondDeferredMaskingDiTImageNet256LatentConfig,
     )
     cs.store(group="vae", name="vae_schema", node=VAEConfig)
     cs.store(

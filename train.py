@@ -25,6 +25,7 @@ from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from torch.utils.data import DistributedSampler
 
 import config as _config  # noqa: F401, registers structured config schema
+from config import LossMode
 from callbacks import (
     CheckpointCallback,
     EpochSummaryCallback,
@@ -177,24 +178,104 @@ class Trainer:
             return data.to(self.device)
         return data
 
+    def _labels_for_batch(self, batch):
+        if self.training.p_uncond is None:
+            return None
+        cond = batch[1].clone()
+        if self.training.p_uncond > 0:
+            mask = torch.rand(cond.size(0), device=cond.device) < self.training.p_uncond
+            cond[mask] = self.raw_module.null_token
+        return cond
+
+    def _forward_model(
+        self,
+        xt: torch.Tensor,
+        t: torch.Tensor,
+        labels: Optional[torch.Tensor],
+        *,
+        return_aux: bool,
+    ):
+        args = (xt, t.view(-1)) if labels is None else (xt, t.view(-1), labels)
+        if return_aux:
+            try:
+                return self.module(*args, return_aux=True)
+            except TypeError as exc:
+                raise ValueError(
+                    "training.loss_mode=masked_mse requires model forward "
+                    "to accept return_aux=True"
+                ) from exc
+        return self.module(*args)
+
+    def _has_active_training_masker(self) -> bool:
+        return bool(
+            self.raw_module.training
+            and getattr(self.raw_module, "masker", None) is not None
+        )
+
+    @staticmethod
+    def _masked_mse(pred: torch.Tensor, target: torch.Tensor, loss_mask: torch.Tensor):
+        loss_mask = loss_mask.to(device=pred.device, dtype=pred.dtype)
+        try:
+            expanded_mask = loss_mask.expand_as(pred)
+        except RuntimeError as exc:
+            raise ValueError(
+                "loss_mask must be broadcastable to prediction shape, got "
+                f"{tuple(loss_mask.shape)} and {tuple(pred.shape)}"
+            ) from exc
+        squared = (pred - target).pow(2) * expanded_mask
+        denom = expanded_mask.sum().clamp_min(1)
+        return squared.sum() / denom
+
+    @staticmethod
+    def _resolve_loss_mode(loss_mode) -> LossMode:
+        if isinstance(loss_mode, LossMode):
+            return loss_mode
+        try:
+            return LossMode(loss_mode)
+        except ValueError as exc:
+            allowed = ", ".join(mode.value for mode in LossMode)
+            raise ValueError(
+                f"Unknown training.loss_mode: {loss_mode!r}. Allowed: {allowed}"
+            ) from exc
+
     def _compute_loss(self, batch) -> tuple[torch.Tensor, Any]:
         x_0 = batch[0]
         eps = torch.randn_like(x_0)
         t = torch.rand(x_0.size(0), *([1] * (x_0.dim() - 1)), device=x_0.device)
         xt = self.flow.interpolate(x_0, eps, t)
-        if self.training.p_uncond is not None:
-            cond = batch[1].clone()
-            if self.training.p_uncond > 0:
-                mask = (
-                    torch.rand(cond.size(0), device=cond.device)
-                    < self.training.p_uncond
-                )
-                cond[mask] = self.raw_module.null_token
-            v_pred = self.module(xt, t.view(-1), cond)
-        else:
-            v_pred = self.module(xt, t.view(-1))
+        labels = self._labels_for_batch(batch)
         vt = self.flow.target(x_0, eps, t)
-        return F.mse_loss(v_pred, vt), v_pred
+        loss_mode = self._resolve_loss_mode(
+            getattr(self.training, "loss_mode", LossMode.mse)
+        )
+
+        if loss_mode is LossMode.mse:
+            if self._has_active_training_masker():
+                raise ValueError(
+                    "training.loss_mode=mse cannot be used while the model has an "
+                    "active masker in training mode"
+                )
+            v_pred = self._forward_model(xt, t, labels, return_aux=False)
+            if isinstance(v_pred, dict):
+                raise ValueError("training.loss_mode=mse requires tensor model output")
+            return F.mse_loss(v_pred, vt), v_pred
+
+        if loss_mode is LossMode.masked_mse:
+            output = self._forward_model(xt, t, labels, return_aux=True)
+            if not isinstance(output, dict):
+                raise ValueError(
+                    "training.loss_mode=masked_mse requires dict output with "
+                    "pred and loss_mask"
+                )
+            if "pred" not in output or "loss_mask" not in output:
+                raise ValueError(
+                    "training.loss_mode=masked_mse requires output keys pred and loss_mask"
+                )
+            pred = output["pred"]
+            loss = self._masked_mse(pred, vt, output["loss_mask"])
+            return loss, pred
+
+        raise AssertionError(f"Unhandled training.loss_mode: {loss_mode!r}")
 
     def fit(self, train_loader, val_loader, callbacks=None) -> None:
         callbacks = callbacks or []
@@ -355,6 +436,26 @@ class Trainer:
         if ckpt.get("scaler_state") and self.scaler is not None:
             self.scaler.load_state_dict(ckpt["scaler_state"])
 
+    def load_model_weights(self, ckpt: dict, weights: str = "raw") -> None:
+        weights_value = weights.value if hasattr(weights, "value") else weights
+        if weights_value == "raw":
+            state = ckpt["model_state"]
+        elif weights_value == "ema":
+            state = ckpt.get("ema_state")
+            if state is None:
+                raise ValueError(
+                    "init_from_weights=ema requested but checkpoint has no EMA state"
+                )
+        else:
+            raise ValueError("training.init_from_weights must be 'raw' or 'ema'")
+        self.raw_module.load_state_dict(state)
+        self.epoch = 0
+        self.step = 0
+        self.losses = []
+        if self.ema_model is not None:
+            self.ema_model.module.load_state_dict(self.raw_module.state_dict())
+            self.ema_model.n_averaged.zero_()
+
 
 def _build_callbacks(cfg, run_dir_cb: RunDirCallback) -> list:
     writer = run_dir_cb.writer
@@ -364,6 +465,10 @@ def _build_callbacks(cfg, run_dir_cb: RunDirCallback) -> list:
         ckpt_dir=run_dir_cb.ckpt_dir,
         checkpoint_every=cfg.training.checkpoint_every,
         resume=cfg.training.resume,
+        init_from=OmegaConf.select(cfg, "training.init_from", default=None),
+        init_from_weights=OmegaConf.select(
+            cfg, "training.init_from_weights", default="raw"
+        ),
     )
     callbacks: list = [
         run_dir_cb,
