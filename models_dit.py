@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from typing import Optional
 
@@ -210,6 +211,21 @@ class SelfAttention(nn.Module):
         return self.proj(out)
 
 
+def _build_activation(
+    activation: Optional[nn.Module],
+    *,
+    clone: bool = False,
+) -> nn.Module:
+    if activation is None:
+        return nn.GELU(approximate="tanh")
+    if isinstance(activation, nn.Module):
+        return copy.deepcopy(activation) if clone else activation
+    raise TypeError(
+        "activation must be an nn.Module or None. "
+        "Use Hydra recursive instantiation for activation configs."
+    )
+
+
 class DenseFFN(nn.Module):
     """Dense transformer feed-forward network."""
 
@@ -222,15 +238,7 @@ class DenseFFN(nn.Module):
         super().__init__()
         self.hidden_size = hidden_size
         self.mlp_width = mlp_width or 4 * hidden_size
-        if activation is None:
-            self.activation = nn.GELU(approximate="tanh")
-        elif isinstance(activation, nn.Module):
-            self.activation = activation
-        else:
-            raise TypeError(
-                "DenseFFN activation must be an nn.Module or None. "
-                "Use Hydra recursive instantiation for activation configs."
-            )
+        self.activation = _build_activation(activation)
         self.net = nn.Sequential(
             nn.Linear(hidden_size, self.mlp_width),
             self.activation,
@@ -241,10 +249,195 @@ class DenseFFN(nn.Module):
         return self.net(x)
 
 
+class ExpertChoiceMoEFFN(nn.Module):
+    """Sparse expert-choice FFN with per-sample token routing.
+
+    Input and output tensors have shape [B, N, D]. For each batch item and
+    expert, the router selects tokens by that expert's probability. Capacity is
+    `int(expert_capacity * N / num_experts)`, clamped to `[1, N]`, so small
+    sequences still route at least one token per expert. Selected expert outputs
+    are weighted by router probability and scatter-added back to the original
+    token positions.
+    """
+
+    def __init__(
+        self,
+        hidden_size: int,
+        mlp_width: Optional[int] = None,
+        num_experts: int = 8,
+        expert_capacity: float = 2.0,
+        activation: Optional[nn.Module] = None,
+        collect_routing_stats: bool = False,
+    ):
+        super().__init__()
+        if hidden_size <= 0:
+            raise ValueError(f"hidden_size must be positive, got {hidden_size}")
+        if num_experts <= 0:
+            raise ValueError(f"num_experts must be positive, got {num_experts}")
+        if expert_capacity <= 0:
+            raise ValueError(f"expert_capacity must be positive, got {expert_capacity}")
+        self.hidden_size = int(hidden_size)
+        self.mlp_width = int(mlp_width or 4 * hidden_size)
+        self.num_experts = int(num_experts)
+        self.expert_capacity = float(expert_capacity)
+        self.collect_routing_stats = bool(collect_routing_stats)
+        self.router = nn.Linear(self.hidden_size, self.num_experts, bias=False)
+        self.experts = nn.ModuleList(
+            [
+                DenseFFN(
+                    hidden_size=self.hidden_size,
+                    mlp_width=self.mlp_width,
+                    activation=_build_activation(activation, clone=True),
+                )
+                for _ in range(self.num_experts)
+            ]
+        )
+        self._last_routing_stats: dict[str, torch.Tensor | float | int] | None = None
+
+    def _tokens_per_expert(self, num_tokens: int) -> int:
+        if num_tokens <= 0:
+            raise ValueError(f"num_tokens must be positive, got {num_tokens}")
+        raw_count = int(self.expert_capacity * num_tokens / self.num_experts)
+        return min(num_tokens, max(1, raw_count))
+
+    def _update_routing_stats(
+        self,
+        routing_probs: torch.Tensor,
+        selected_indices: torch.Tensor,
+        tokens_per_expert: int,
+    ) -> None:
+        """Cache diagnostics from router probabilities and selected token indices.
+
+        Args:
+            routing_probs: Router softmax output with shape [B, T, E].
+            selected_indices: Top token indices with shape [B, E, K].
+            tokens_per_expert: The routed token count `K` for each expert.
+        """
+        with torch.no_grad():
+            bsz, num_tokens, _ = routing_probs.shape
+            flat_indices = selected_indices.reshape(bsz, -1)
+            assignment_counts = torch.zeros(
+                bsz,
+                num_tokens,
+                device=routing_probs.device,
+                dtype=torch.float32,
+            )
+            assignment_counts.scatter_add_(
+                1,
+                flat_indices,
+                torch.ones_like(flat_indices, dtype=torch.float32),
+            )
+            probs = routing_probs.detach().float()
+            entropy = -(probs * probs.clamp_min(1e-20).log()).sum(dim=-1).mean()
+            router_max = probs.max(dim=-1).values.mean()
+            active_assignments = int(flat_indices.numel())
+            expert_counts = torch.full(
+                (self.num_experts,),
+                bsz * tokens_per_expert,
+                device=routing_probs.device,
+                dtype=torch.int64,
+            )
+            self._last_routing_stats = {
+                "batch_size": int(bsz),
+                "num_tokens": int(num_tokens),
+                "num_experts": int(self.num_experts),
+                "tokens_per_expert": int(tokens_per_expert),
+                "selected_token_fraction": (assignment_counts > 0)
+                .float()
+                .mean()
+                .detach(),
+                "multi_expert_token_fraction": (assignment_counts > 1)
+                .float()
+                .mean()
+                .detach(),
+                "router_entropy": entropy.detach(),
+                "router_max_prob_mean": router_max.detach(),
+                "zero_token_expert_count": (expert_counts == 0).sum().detach(),
+                "active_assignments": active_assignments,
+            }
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() != 3:
+            raise ValueError(f"Expected x shape [B, T, D], got {tuple(x.shape)}")
+        if x.size(-1) != self.hidden_size:
+            raise ValueError(
+                f"Expected hidden size {self.hidden_size}, got {x.size(-1)}"
+            )
+        tokens_per_expert = self._tokens_per_expert(x.size(1))
+        routing_probs = F.softmax(self.router(x).float(), dim=-1)
+        output = torch.zeros_like(x)
+        selected_indices = []
+        for expert_idx, expert in enumerate(self.experts):
+            weights, indices = torch.topk(
+                routing_probs[:, :, expert_idx],
+                k=tokens_per_expert,
+                dim=1,
+            )
+            gather_index = indices.unsqueeze(-1).expand(-1, -1, self.hidden_size)
+            expert_input = torch.gather(x, dim=1, index=gather_index)
+            expert_output = expert(expert_input)
+            weighted_output = expert_output * weights.to(expert_output.dtype).unsqueeze(
+                -1
+            )
+            output.scatter_add_(1, gather_index, weighted_output)
+            if self.collect_routing_stats:
+                selected_indices.append(indices)
+        if self.collect_routing_stats:
+            self._update_routing_stats(
+                routing_probs,
+                torch.stack(selected_indices, dim=1),
+                tokens_per_expert,
+            )
+        else:
+            self._last_routing_stats = None
+        return output
+
+    def get_routing_stats(self) -> dict[str, float | int] | None:
+        """Return latest routing diagnostics, or None before collection.
+
+        Diagnostics are populated only after a forward pass when
+        `collect_routing_stats=True`.
+        """
+        if self._last_routing_stats is None:
+            return None
+        return {
+            key: _routing_stat_value(value)
+            for key, value in self._last_routing_stats.items()
+        }
+
+
+def _routing_stat_value(value: torch.Tensor | float | int) -> float | int:
+    if not torch.is_tensor(value):
+        return value
+    item = value.detach().cpu().item()
+    if value.dtype in (torch.int8, torch.int16, torch.int32, torch.int64):
+        return int(item)
+    return float(item)
+
+
+def collect_moe_routing_stats(
+    module: nn.Module,
+) -> dict[str, dict[str, float | int]]:
+    """Return latest MoE routing stats keyed by `named_modules()` path.
+
+    This is a convenience for trainer callbacks and diagnostics. Per-layer API
+    users should call `ExpertChoiceMoEFFN.get_routing_stats()`. Only modules
+    that have run with `collect_routing_stats=True` are included. If `module` is
+    itself an MoE FFN, its key is `"root"`.
+    """
+    stats = {}
+    for name, child in module.named_modules():
+        if isinstance(child, ExpertChoiceMoEFFN):
+            layer_stats = child.get_routing_stats()
+            if layer_stats is not None:
+                stats[name or "root"] = layer_stats
+    return stats
+
+
 class DiTBlock(nn.Module):
     """AdaLN-Zero DiT transformer block."""
 
-    def __init__(self, hidden_size: int, attention: SelfAttention, ffn: DenseFFN):
+    def __init__(self, hidden_size: int, attention: SelfAttention, ffn: nn.Module):
         super().__init__()
         self.hidden_size = hidden_size
         self.attn_adaln = AdaLayerNorm(hidden_size)

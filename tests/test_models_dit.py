@@ -10,6 +10,7 @@ from models_dit import (
     ClassCondDiT,
     DenseFFN,
     DiTBackbone,
+    ExpertChoiceMoEFFN,
     DiTBlock,
     PatchMixer,
     RandomTokenMasker,
@@ -17,6 +18,7 @@ from models_dit import (
     SelfAttention,
     apply_2d_rope,
     build_2d_patch_coords,
+    collect_moe_routing_stats,
 )
 
 
@@ -281,6 +283,62 @@ class DiTModelTest(unittest.TestCase):
         loss = ((out["pred"] - target).pow(2) * mask).sum() / mask.sum()
         self.assertTrue(torch.isfinite(loss))
 
+    def test_deferred_model_with_mixed_moe_blocks_routes_full_and_kept_tokens(self):
+        def dense_block():
+            return DiTBlock(
+                hidden_size=16,
+                attention=SelfAttention(hidden_size=16, num_heads=4),
+                ffn=DenseFFN(hidden_size=16, mlp_width=32),
+            )
+
+        def moe_block():
+            return DiTBlock(
+                hidden_size=16,
+                attention=SelfAttention(hidden_size=16, num_heads=4),
+                ffn=ExpertChoiceMoEFFN(
+                    hidden_size=16,
+                    mlp_width=32,
+                    num_experts=4,
+                    expert_capacity=2.0,
+                    collect_routing_stats=True,
+                ),
+            )
+
+        model = ClassCondDeferredMaskingDiT(
+            in_ch=4,
+            latent_size=8,
+            patch_size=2,
+            num_classes=10,
+            patch_mixer=PatchMixer(
+                hidden_size=16,
+                blocks=[dense_block(), moe_block()],
+            ),
+            masker=RandomTokenMasker(mask_ratio=0.5),
+            backbone=DiTBackbone(
+                hidden_size=16,
+                blocks=[dense_block(), moe_block()],
+            ),
+            time_dim=16,
+            class_dim=16,
+        )
+        model.train()
+        x = torch.randn(2, 4, 8, 8)
+        out = model(x, torch.rand(2), torch.tensor([1, 2]), return_aux=True)
+        self.assertEqual(out["pred"].shape, x.shape)
+        self.assertEqual(out["loss_mask"].shape, (2, 1, 8, 8))
+        loss = out["pred"].square().mean()
+        loss.backward()
+        self.assertTrue(
+            all(
+                p.grad is None or torch.isfinite(p.grad).all()
+                for p in model.parameters()
+            )
+        )
+
+        stats = collect_moe_routing_stats(model)
+        self.assertEqual(stats["patch_mixer.blocks.1.ffn"]["num_tokens"], 16)
+        self.assertEqual(stats["backbone.blocks.1.ffn"]["num_tokens"], 8)
+
     def test_forward_shape_with_normal_and_null_labels(self):
         model = _make_model(
             in_ch=4,
@@ -319,6 +377,129 @@ class DiTModelTest(unittest.TestCase):
     def test_dense_ffn_rejects_uninstantiated_activation_config(self):
         with self.assertRaises(TypeError):
             DenseFFN(hidden_size=8, activation={"_target_": "torch.nn.SiLU"})
+
+    def test_expert_choice_moe_preserves_shape_and_routes_common_lengths(self):
+        for num_tokens in (64, 256):
+            moe = ExpertChoiceMoEFFN(
+                hidden_size=16,
+                mlp_width=32,
+                num_experts=8,
+                expert_capacity=2.0,
+                collect_routing_stats=True,
+            )
+            x = torch.randn(3, num_tokens, 16, requires_grad=True)
+            y = moe(x)
+
+            self.assertEqual(y.shape, x.shape)
+            stats = collect_moe_routing_stats(moe)["root"]
+            self.assertEqual(stats["tokens_per_expert"], num_tokens // 4)
+            self.assertEqual(stats["active_assignments"], 3 * 8 * (num_tokens // 4))
+            self.assertGreater(stats["selected_token_fraction"], 0)
+            self.assertGreaterEqual(stats["multi_expert_token_fraction"], 0)
+
+            loss = y.square().mean()
+            loss.backward()
+            grads = [p.grad for p in moe.parameters() if p.grad is not None]
+            self.assertGreater(len(grads), 0)
+            self.assertTrue(all(torch.isfinite(grad).all() for grad in grads))
+
+    def test_expert_choice_moe_rejects_invalid_capacity(self):
+        with self.assertRaises(ValueError):
+            ExpertChoiceMoEFFN(hidden_size=8, expert_capacity=0.0)
+
+    def test_expert_choice_moe_keeps_at_least_one_token_per_expert(self):
+        moe = ExpertChoiceMoEFFN(
+            hidden_size=8,
+            mlp_width=16,
+            num_experts=8,
+            expert_capacity=0.5,
+            collect_routing_stats=True,
+        )
+        x = torch.randn(2, 1, 8)
+        y = moe(x)
+        self.assertEqual(y.shape, x.shape)
+        stats = collect_moe_routing_stats(moe)["root"]
+        self.assertEqual(stats["tokens_per_expert"], 1)
+        self.assertEqual(stats["active_assignments"], 16)
+
+    def test_expert_choice_moe_skips_routing_stats_by_default(self):
+        moe = ExpertChoiceMoEFFN(
+            hidden_size=8,
+            mlp_width=16,
+            num_experts=4,
+            expert_capacity=2.0,
+        )
+        y = moe(torch.randn(2, 8, 8))
+        self.assertEqual(y.shape, (2, 8, 8))
+        self.assertIsNone(moe.get_routing_stats())
+        self.assertEqual(collect_moe_routing_stats(moe), {})
+
+    def test_dit_block_accepts_expert_choice_moe_ffn(self):
+        block = DiTBlock(
+            hidden_size=16,
+            attention=SelfAttention(hidden_size=16, num_heads=4),
+            ffn=ExpertChoiceMoEFFN(
+                hidden_size=16,
+                mlp_width=32,
+                num_experts=4,
+                expert_capacity=2.0,
+            ),
+        )
+        x = torch.randn(2, 8, 16)
+        cond = torch.randn(2, 16)
+        coords = build_2d_patch_coords(2, 4)
+        y = block(x, cond, coords, RoPE2D())
+        self.assertEqual(y.shape, x.shape)
+
+    def test_patch_mixer_and_backbone_support_mixed_ffn_blocks(self):
+        def dense_block():
+            return DiTBlock(
+                hidden_size=16,
+                attention=SelfAttention(hidden_size=16, num_heads=4),
+                ffn=DenseFFN(hidden_size=16, mlp_width=32),
+            )
+
+        def moe_block():
+            return DiTBlock(
+                hidden_size=16,
+                attention=SelfAttention(hidden_size=16, num_heads=4),
+                ffn=ExpertChoiceMoEFFN(
+                    hidden_size=16,
+                    mlp_width=32,
+                    num_experts=4,
+                    expert_capacity=2.0,
+                ),
+            )
+
+        patch_mixer = PatchMixer(hidden_size=16, blocks=[dense_block(), moe_block()])
+        backbone = DiTBackbone(hidden_size=16, blocks=[dense_block(), moe_block()])
+        x = torch.randn(2, 8, 16)
+        cond = torch.randn(2, 16)
+        coords = build_2d_patch_coords(2, 4)
+
+        self.assertEqual(patch_mixer(x, cond, coords, RoPE2D()).shape, x.shape)
+        self.assertEqual(backbone(x, cond, coords, RoPE2D()).shape, x.shape)
+        self.assertIsInstance(patch_mixer.blocks[0].ffn, DenseFFN)
+        self.assertIsInstance(patch_mixer.blocks[1].ffn, ExpertChoiceMoEFFN)
+        self.assertIsInstance(backbone.blocks[0].ffn, DenseFFN)
+        self.assertIsInstance(backbone.blocks[1].ffn, ExpertChoiceMoEFFN)
+
+    def test_collect_moe_routing_stats_names_layers(self):
+        moe = ExpertChoiceMoEFFN(
+            hidden_size=8,
+            mlp_width=16,
+            num_experts=4,
+            expert_capacity=2.0,
+            collect_routing_stats=True,
+        )
+        model = torch.nn.Sequential(moe)
+        _ = model(torch.randn(2, 8, 8))
+        layer_stats = moe.get_routing_stats()
+        self.assertIsNotNone(layer_stats)
+        self.assertEqual(layer_stats["active_assignments"], 2 * 4 * 4)
+        stats = collect_moe_routing_stats(model)
+        self.assertIn("0", stats)
+        self.assertEqual(stats["0"], layer_stats)
 
     def test_hydra_dit_smoke_config_materializes(self):
         from hydra import compose, initialize_config_dir
@@ -396,6 +577,10 @@ class DiTModelTest(unittest.TestCase):
         self.assertEqual(cfg.model.masker._target_, "models_dit.RandomTokenMasker")
         self.assertEqual(cfg.model.masker.mask_ratio, 0.75)
         self.assertEqual(cfg.training.loss_mode, LossMode.masked_mse)
+        for block in cfg.model.patch_mixer.blocks:
+            self.assertEqual(block.ffn._target_, "models_dit.DenseFFN")
+        for block in cfg.model.backbone.blocks:
+            self.assertEqual(block.ffn._target_, "models_dit.DenseFFN")
 
         model = instantiate(cfg.model)
         self.assertIsInstance(model, ClassCondDeferredMaskingDiT)
@@ -417,6 +602,50 @@ class DiTModelTest(unittest.TestCase):
             model, x, num_steps=2, cond=labels, guidance_scale=2.0
         )
         self.assertEqual(samples.shape, x.shape)
+
+    def test_hydra_moe_configs_define_alternating_layerwise_blocks(self):
+        from hydra import compose, initialize_config_dir
+        from hydra.core.global_hydra import GlobalHydra
+
+        config_dir = os.path.abspath("configs")
+        for experiment, expected_backbone_width in (
+            ("imagenet256_latent_dit_b2_moe", 768),
+            ("imagenet256_latent_dit_m2_moe", 1024),
+        ):
+            GlobalHydra.instance().clear()
+            with initialize_config_dir(config_dir=config_dir, version_base=None):
+                cfg = compose(
+                    config_name="config", overrides=[f"experiment={experiment}"]
+                )
+
+            self.assertEqual(
+                cfg.model._target_, "models_dit.ClassCondDeferredMaskingDiT"
+            )
+            self.assertEqual(cfg.model.backbone.hidden_size, expected_backbone_width)
+            self.assertEqual(cfg.training.loss_mode, LossMode.masked_mse)
+            self.assertEqual(
+                [block.ffn._target_ for block in cfg.model.patch_mixer.blocks],
+                ["models_dit.DenseFFN", "models_dit.ExpertChoiceMoEFFN"],
+            )
+            backbone_targets = [
+                block.ffn._target_ for block in cfg.model.backbone.blocks
+            ]
+            self.assertEqual(len(backbone_targets), 12)
+            self.assertEqual(
+                backbone_targets,
+                [
+                    (
+                        "models_dit.DenseFFN"
+                        if idx % 2 == 0
+                        else "models_dit.ExpertChoiceMoEFFN"
+                    )
+                    for idx in range(12)
+                ],
+            )
+            for block in cfg.model.patch_mixer.blocks + cfg.model.backbone.blocks:
+                if block.ffn._target_ == "models_dit.ExpertChoiceMoEFFN":
+                    self.assertEqual(block.ffn.num_experts, 8)
+                    self.assertEqual(block.ffn.expert_capacity, 2.0)
 
 
 if __name__ == "__main__":

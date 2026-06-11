@@ -504,6 +504,16 @@ def _register() -> None:
         name="classcond_deferred_dit_imagenet256_latent_m2_schema",
         node=ClassCondDeferredMaskingDiTImageNet256LatentConfig,
     )
+    cs.store(
+        group="model",
+        name="classcond_deferred_dit_imagenet256_latent_b2_moe_schema",
+        node=ClassCondDeferredMaskingDiTImageNet256LatentConfig,
+    )
+    cs.store(
+        group="model",
+        name="classcond_deferred_dit_imagenet256_latent_m2_moe_schema",
+        node=ClassCondDeferredMaskingDiTImageNet256LatentConfig,
+    )
     cs.store(group="vae", name="vae_schema", node=VAEConfig)
     cs.store(
         group="vae_transform",
