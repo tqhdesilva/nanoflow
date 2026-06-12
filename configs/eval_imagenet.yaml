@@ -1,0 +1,64 @@
+defaults:
+  - dataset: imagenet256_latent_mmap
+  - model: classcond_deferred_dit_imagenet256_latent_tiny
+  - vae: sd_vae_ft_ema
+  - eval: imagenet_schema
+  - _self_
+  - optional experiment: null
+
+device: cpu
+runs_dir: runs
+
+eval:
+  checkpoint: null
+  output_dir: null
+  device: ${device}
+  seed: 0
+  weights: auto
+
+  generate: true
+  compute_fid: false
+  make_stats: false
+
+  generation:
+    num_samples: 10000
+    batch_size: 16
+    num_steps: 200
+    guidance_scale: 2.0
+    latent_shape: [4, 32, 32]
+    num_classes: 1000
+    image_size: 256
+    resume: true
+    clean_output_dir: false
+
+  stats:
+    real_dir: null
+    custom_stats_name: nanoflow_imagenet256_val_real_tf_legacy
+    mode: legacy_tensorflow
+    model_name: inception_v3
+    device: ${eval.device}
+    batch_size: 64
+    num_workers: 8
+    force: false
+    metadata_path: null
+
+  fid:
+    sample_dir: null
+    # Expected PNG count. For FID-only 50K runs, set this to 50000.
+    num_samples: ${eval.generation.num_samples}
+    custom_stats_name: nanoflow_imagenet256_val_real_tf_legacy
+    dataset_name: null
+    dataset_res: 256
+    dataset_split: val
+    mode: legacy_tensorflow
+    model_name: inception_v3
+    device: ${eval.device}
+    batch_size: 64
+    num_workers: 8
+    output_path: null
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: outputs/${now:%Y-%m-%d_%H-%M-%S}

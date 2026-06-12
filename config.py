@@ -338,6 +338,73 @@ class InferenceConfig:
 
 
 @dataclass
+class ImageNetEvalGenerationConfig:
+    """Batched PNG sample generation settings for ImageNet eval."""
+
+    num_samples: int = 10000
+    batch_size: int = 16
+    num_steps: int = 200
+    guidance_scale: float = 2.0
+    latent_shape: list[int] = field(default_factory=lambda: [4, 32, 32])
+    num_classes: int = 1000
+    image_size: int = 256
+    resume: bool = True
+    clean_output_dir: bool = False
+
+
+@dataclass
+class ImageNetEvalStatsConfig:
+    """Clean-FID custom reference stats creation settings."""
+
+    real_dir: Optional[str] = None
+    custom_stats_name: str = "nanoflow_imagenet256_val_real_tf_legacy"
+    mode: str = "legacy_tensorflow"
+    model_name: str = "inception_v3"
+    device: str = "cpu"
+    batch_size: int = 64
+    num_workers: int = 8
+    force: bool = False
+    metadata_path: Optional[str] = None
+
+
+@dataclass
+class ImageNetEvalFIDConfig:
+    """Clean-FID metric settings for generated PNG directories."""
+
+    sample_dir: Optional[str] = None
+    num_samples: int = 10000
+    custom_stats_name: Optional[str] = "nanoflow_imagenet256_val_real_tf_legacy"
+    dataset_name: Optional[str] = None
+    dataset_res: int = 256
+    dataset_split: str = "val"
+    mode: str = "legacy_tensorflow"
+    model_name: str = "inception_v3"
+    device: str = "cpu"
+    batch_size: int = 64
+    num_workers: int = 8
+    output_path: Optional[str] = None
+
+
+@dataclass
+class ImageNetEvalConfig:
+    """Top-level ImageNet eval settings for `eval_imagenet.py`."""
+
+    checkpoint: Optional[str] = None
+    output_dir: Optional[str] = None
+    device: str = "cpu"
+    seed: int = 0
+    weights: str = "auto"
+    generate: bool = True
+    compute_fid: bool = False
+    make_stats: bool = False
+    generation: ImageNetEvalGenerationConfig = field(
+        default_factory=ImageNetEvalGenerationConfig
+    )
+    stats: ImageNetEvalStatsConfig = field(default_factory=ImageNetEvalStatsConfig)
+    fid: ImageNetEvalFIDConfig = field(default_factory=ImageNetEvalFIDConfig)
+
+
+@dataclass
 class Config:
     # Shared config groups, referenced by recipes via interpolation.
     trainer: Optional[NanoFlowConfig] = None
@@ -522,6 +589,7 @@ def _register() -> None:
     )
     cs.store(group="flow", name="condot_schema", node=CondOTConfig)
     cs.store(group="training", name="default_schema", node=TrainingConfig)
+    cs.store(group="eval", name="imagenet_schema", node=ImageNetEvalConfig)
     cs.store(group="rl_training", name="default_schema", node=RLTrainingConfig)
     cs.store(
         group="reward",
