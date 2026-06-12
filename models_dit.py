@@ -171,21 +171,35 @@ class SelfAttention(nn.Module):
         qkv_bias: bool = True,
     ):
         super().__init__()
-        self.hidden_size = hidden_size
-        self.num_heads = num_heads
-        self.attention_width = attention_width or hidden_size
-        if self.attention_width % num_heads != 0:
+        if hidden_size <= 0:
+            raise ValueError(f"hidden_size must be positive, got {hidden_size}")
+        if num_heads <= 0:
+            raise ValueError(f"num_heads must be positive, got {num_heads}")
+        self.hidden_size = int(hidden_size)
+        self.num_heads = int(num_heads)
+        self.attention_width = (
+            self.hidden_size if attention_width is None else int(attention_width)
+        )
+        if self.attention_width <= 0:
+            raise ValueError(
+                f"attention_width must be positive, got {self.attention_width}"
+            )
+        if self.attention_width % self.num_heads != 0:
             raise ValueError(
                 "attention_width must be divisible by num_heads, got "
-                f"{self.attention_width} and {num_heads}"
+                f"{self.attention_width} and {self.num_heads}"
             )
-        self.head_dim = self.attention_width // num_heads
+        self.head_dim = self.attention_width // self.num_heads
         if self.head_dim % 4 != 0:
             raise ValueError(
                 f"2D RoPE requires per-head dim divisible by 4, got {self.head_dim}"
             )
-        self.qkv = nn.Linear(hidden_size, 3 * self.attention_width, bias=qkv_bias)
-        self.proj = nn.Linear(self.attention_width, hidden_size)
+        self.qkv = nn.Linear(
+            self.hidden_size,
+            3 * self.attention_width,
+            bias=qkv_bias,
+        )
+        self.proj = nn.Linear(self.attention_width, self.hidden_size)
 
     def forward(
         self,
@@ -236,13 +250,17 @@ class DenseFFN(nn.Module):
         activation: Optional[nn.Module] = None,
     ):
         super().__init__()
-        self.hidden_size = hidden_size
-        self.mlp_width = mlp_width or 4 * hidden_size
+        if hidden_size <= 0:
+            raise ValueError(f"hidden_size must be positive, got {hidden_size}")
+        self.hidden_size = int(hidden_size)
+        self.mlp_width = 4 * self.hidden_size if mlp_width is None else int(mlp_width)
+        if self.mlp_width <= 0:
+            raise ValueError(f"mlp_width must be positive, got {self.mlp_width}")
         self.activation = _build_activation(activation)
         self.net = nn.Sequential(
-            nn.Linear(hidden_size, self.mlp_width),
+            nn.Linear(self.hidden_size, self.mlp_width),
             self.activation,
-            nn.Linear(self.mlp_width, hidden_size),
+            nn.Linear(self.mlp_width, self.hidden_size),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -277,7 +295,9 @@ class ExpertChoiceMoEFFN(nn.Module):
         if expert_capacity <= 0:
             raise ValueError(f"expert_capacity must be positive, got {expert_capacity}")
         self.hidden_size = int(hidden_size)
-        self.mlp_width = int(mlp_width or 4 * hidden_size)
+        self.mlp_width = 4 * self.hidden_size if mlp_width is None else int(mlp_width)
+        if self.mlp_width <= 0:
+            raise ValueError(f"mlp_width must be positive, got {self.mlp_width}")
         self.num_experts = int(num_experts)
         self.expert_capacity = float(expert_capacity)
         self.collect_routing_stats = bool(collect_routing_stats)
@@ -439,9 +459,23 @@ class DiTBlock(nn.Module):
 
     def __init__(self, hidden_size: int, attention: SelfAttention, ffn: nn.Module):
         super().__init__()
-        self.hidden_size = hidden_size
-        self.attn_adaln = AdaLayerNorm(hidden_size)
-        self.ffn_adaln = AdaLayerNorm(hidden_size)
+        if hidden_size <= 0:
+            raise ValueError(f"hidden_size must be positive, got {hidden_size}")
+        self.hidden_size = int(hidden_size)
+        if attention.hidden_size != self.hidden_size:
+            raise ValueError(
+                "attention hidden_size must match block hidden_size, got "
+                f"{attention.hidden_size} and {self.hidden_size}"
+            )
+        if not hasattr(ffn, "hidden_size"):
+            raise ValueError("ffn must expose hidden_size for residual validation")
+        if ffn.hidden_size != self.hidden_size:
+            raise ValueError(
+                "ffn hidden_size must match block hidden_size, got "
+                f"{ffn.hidden_size} and {self.hidden_size}"
+            )
+        self.attn_adaln = AdaLayerNorm(self.hidden_size)
+        self.ffn_adaln = AdaLayerNorm(self.hidden_size)
         self.attention = attention
         self.ffn = ffn
 
@@ -471,7 +505,13 @@ class DiTBackbone(nn.Module):
         super().__init__()
         if not blocks:
             raise ValueError("DiTBackbone requires at least one block")
-        self.hidden_size = hidden_size
+        self.hidden_size = int(hidden_size)
+        for idx, block in enumerate(blocks):
+            if block.hidden_size != self.hidden_size:
+                raise ValueError(
+                    "backbone block hidden_size must match backbone hidden_size, got "
+                    f"block {idx}: {block.hidden_size} and {self.hidden_size}"
+                )
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.blocks = nn.ModuleList(blocks)
 
@@ -566,7 +606,13 @@ class PatchMixer(nn.Module):
         super().__init__()
         if not blocks:
             raise ValueError("PatchMixer requires at least one block")
-        self.hidden_size = hidden_size
+        self.hidden_size = int(hidden_size)
+        for idx, block in enumerate(blocks):
+            if block.hidden_size != self.hidden_size:
+                raise ValueError(
+                    "patch mixer block hidden_size must match patch mixer hidden_size, "
+                    f"got block {idx}: {block.hidden_size} and {self.hidden_size}"
+                )
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.blocks = nn.ModuleList(blocks)
 

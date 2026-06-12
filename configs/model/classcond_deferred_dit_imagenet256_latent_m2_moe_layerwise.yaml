@@ -1,0 +1,240 @@
+defaults:
+  - classcond_deferred_dit_imagenet256_latent_m2_moe_schema
+
+_target_: models_dit.ClassCondDeferredMaskingDiT
+_recursive_: true
+in_ch: 4
+latent_size: 32
+patch_size: 2
+num_classes: 1000
+time_dim: 768
+class_dim: 768
+pos_embedding:
+  _target_: models_dit.RoPE2D
+  base: 10000.0
+use_gradient_checkpointing: true
+patch_mixer:
+  _target_: models_dit.PatchMixer
+  hidden_size: 768
+  use_gradient_checkpointing: ${..use_gradient_checkpointing}
+  blocks:
+    - _target_: models_dit.DiTBlock
+      hidden_size: ${...hidden_size}
+      attention:
+        _target_: models_dit.SelfAttention
+        hidden_size: ${..hidden_size}
+        num_heads: 12
+      ffn:
+        _target_: models_dit.DenseFFN
+        hidden_size: ${..hidden_size}
+        mlp_width: 3072
+        activation:
+          _target_: torch.nn.GELU
+          approximate: tanh
+    - _target_: models_dit.DiTBlock
+      hidden_size: ${...hidden_size}
+      attention:
+        _target_: models_dit.SelfAttention
+        hidden_size: ${..hidden_size}
+        num_heads: 12
+      ffn:
+        _target_: models_dit.ExpertChoiceMoEFFN
+        hidden_size: ${..hidden_size}
+        mlp_width: 3072
+        num_experts: 8
+        expert_capacity: 2.0
+        activation:
+          _target_: torch.nn.GELU
+          approximate: tanh
+masker:
+  _target_: models_dit.RandomTokenMasker
+  mask_ratio: 0.75
+backbone:
+  _target_: models_dit.DiTBackbone
+  hidden_size: 1024
+  use_gradient_checkpointing: ${..use_gradient_checkpointing}
+  # Derived from M4 qkv_ratio [0.5, 1.0] and mlp_ratio [0.5, 4.0].
+  # Rounded up to multiples of 64 for matmul-friendly dims.
+  # attention_widths: [512, 576, 640, 704, 704, 768, 832, 896, 896, 960, 1024, 1024]
+  # mlp_widths: [512, 896, 1216, 1536, 1856, 2176, 2496, 2816, 3136, 3456, 3776, 4096]
+  blocks:
+    - _target_: models_dit.DiTBlock
+      hidden_size: ${...hidden_size}
+      attention:
+        _target_: models_dit.SelfAttention
+        hidden_size: ${..hidden_size}
+        num_heads: 16
+        attention_width: 512
+      ffn:
+        _target_: models_dit.DenseFFN
+        hidden_size: ${..hidden_size}
+        mlp_width: 512
+        activation:
+          _target_: torch.nn.GELU
+          approximate: tanh
+    - _target_: models_dit.DiTBlock
+      hidden_size: ${...hidden_size}
+      attention:
+        _target_: models_dit.SelfAttention
+        hidden_size: ${..hidden_size}
+        num_heads: 16
+        attention_width: 576
+      ffn:
+        _target_: models_dit.ExpertChoiceMoEFFN
+        hidden_size: ${..hidden_size}
+        mlp_width: 896
+        num_experts: 8
+        expert_capacity: 2.0
+        activation:
+          _target_: torch.nn.GELU
+          approximate: tanh
+    - _target_: models_dit.DiTBlock
+      hidden_size: ${...hidden_size}
+      attention:
+        _target_: models_dit.SelfAttention
+        hidden_size: ${..hidden_size}
+        num_heads: 16
+        attention_width: 640
+      ffn:
+        _target_: models_dit.DenseFFN
+        hidden_size: ${..hidden_size}
+        mlp_width: 1216
+        activation:
+          _target_: torch.nn.GELU
+          approximate: tanh
+    - _target_: models_dit.DiTBlock
+      hidden_size: ${...hidden_size}
+      attention:
+        _target_: models_dit.SelfAttention
+        hidden_size: ${..hidden_size}
+        num_heads: 16
+        attention_width: 704
+      ffn:
+        _target_: models_dit.ExpertChoiceMoEFFN
+        hidden_size: ${..hidden_size}
+        mlp_width: 1536
+        num_experts: 8
+        expert_capacity: 2.0
+        activation:
+          _target_: torch.nn.GELU
+          approximate: tanh
+    - _target_: models_dit.DiTBlock
+      hidden_size: ${...hidden_size}
+      attention:
+        _target_: models_dit.SelfAttention
+        hidden_size: ${..hidden_size}
+        num_heads: 16
+        attention_width: 704
+      ffn:
+        _target_: models_dit.DenseFFN
+        hidden_size: ${..hidden_size}
+        mlp_width: 1856
+        activation:
+          _target_: torch.nn.GELU
+          approximate: tanh
+    - _target_: models_dit.DiTBlock
+      hidden_size: ${...hidden_size}
+      attention:
+        _target_: models_dit.SelfAttention
+        hidden_size: ${..hidden_size}
+        num_heads: 16
+        attention_width: 768
+      ffn:
+        _target_: models_dit.ExpertChoiceMoEFFN
+        hidden_size: ${..hidden_size}
+        mlp_width: 2176
+        num_experts: 8
+        expert_capacity: 2.0
+        activation:
+          _target_: torch.nn.GELU
+          approximate: tanh
+    - _target_: models_dit.DiTBlock
+      hidden_size: ${...hidden_size}
+      attention:
+        _target_: models_dit.SelfAttention
+        hidden_size: ${..hidden_size}
+        num_heads: 16
+        attention_width: 832
+      ffn:
+        _target_: models_dit.DenseFFN
+        hidden_size: ${..hidden_size}
+        mlp_width: 2496
+        activation:
+          _target_: torch.nn.GELU
+          approximate: tanh
+    - _target_: models_dit.DiTBlock
+      hidden_size: ${...hidden_size}
+      attention:
+        _target_: models_dit.SelfAttention
+        hidden_size: ${..hidden_size}
+        num_heads: 16
+        attention_width: 896
+      ffn:
+        _target_: models_dit.ExpertChoiceMoEFFN
+        hidden_size: ${..hidden_size}
+        mlp_width: 2816
+        num_experts: 8
+        expert_capacity: 2.0
+        activation:
+          _target_: torch.nn.GELU
+          approximate: tanh
+    - _target_: models_dit.DiTBlock
+      hidden_size: ${...hidden_size}
+      attention:
+        _target_: models_dit.SelfAttention
+        hidden_size: ${..hidden_size}
+        num_heads: 16
+        attention_width: 896
+      ffn:
+        _target_: models_dit.DenseFFN
+        hidden_size: ${..hidden_size}
+        mlp_width: 3136
+        activation:
+          _target_: torch.nn.GELU
+          approximate: tanh
+    - _target_: models_dit.DiTBlock
+      hidden_size: ${...hidden_size}
+      attention:
+        _target_: models_dit.SelfAttention
+        hidden_size: ${..hidden_size}
+        num_heads: 16
+        attention_width: 960
+      ffn:
+        _target_: models_dit.ExpertChoiceMoEFFN
+        hidden_size: ${..hidden_size}
+        mlp_width: 3456
+        num_experts: 8
+        expert_capacity: 2.0
+        activation:
+          _target_: torch.nn.GELU
+          approximate: tanh
+    - _target_: models_dit.DiTBlock
+      hidden_size: ${...hidden_size}
+      attention:
+        _target_: models_dit.SelfAttention
+        hidden_size: ${..hidden_size}
+        num_heads: 16
+        attention_width: 1024
+      ffn:
+        _target_: models_dit.DenseFFN
+        hidden_size: ${..hidden_size}
+        mlp_width: 3776
+        activation:
+          _target_: torch.nn.GELU
+          approximate: tanh
+    - _target_: models_dit.DiTBlock
+      hidden_size: ${...hidden_size}
+      attention:
+        _target_: models_dit.SelfAttention
+        hidden_size: ${..hidden_size}
+        num_heads: 16
+        attention_width: 1024
+      ffn:
+        _target_: models_dit.ExpertChoiceMoEFFN
+        hidden_size: ${..hidden_size}
+        mlp_width: 4096
+        num_experts: 8
+        expert_capacity: 2.0
+        activation:
+          _target_: torch.nn.GELU
+          approximate: tanh

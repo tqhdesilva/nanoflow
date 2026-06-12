@@ -363,6 +363,101 @@ class DiTModelTest(unittest.TestCase):
         self.assertEqual(missing, [])
         self.assertEqual(unexpected, [])
 
+    def test_attention_and_ffn_width_defaults_and_validation(self):
+        attn = SelfAttention(hidden_size=16, num_heads=4)
+        self.assertEqual(attn.attention_width, 16)
+        self.assertEqual(attn.head_dim, 4)
+        x = torch.randn(2, 5, 16)
+        coords = build_2d_patch_coords(1, 5)
+        self.assertEqual(attn(x, coords, RoPE2D()).shape, x.shape)
+
+        scaled = SelfAttention(hidden_size=16, num_heads=4, attention_width=32)
+        self.assertEqual(scaled.attention_width, 32)
+        self.assertEqual(scaled.head_dim, 8)
+        self.assertEqual(scaled.qkv.out_features, 96)
+        self.assertEqual(scaled.proj.in_features, 32)
+        self.assertEqual(scaled(x, coords, RoPE2D()).shape, x.shape)
+
+        with self.assertRaises(ValueError):
+            SelfAttention(hidden_size=16, num_heads=4, attention_width=18)
+        with self.assertRaises(ValueError):
+            SelfAttention(hidden_size=16, num_heads=4, attention_width=24)
+        with self.assertRaises(ValueError):
+            SelfAttention(hidden_size=16, num_heads=4, attention_width=0)
+
+        ffn = DenseFFN(hidden_size=8)
+        self.assertEqual(ffn.mlp_width, 32)
+        self.assertEqual(ffn.net[0].out_features, 32)
+        self.assertEqual(ffn.net[2].in_features, 32)
+
+        with self.assertRaises(ValueError):
+            DiTBlock(
+                hidden_size=16,
+                attention=SelfAttention(hidden_size=8, num_heads=2),
+                ffn=DenseFFN(hidden_size=16),
+            )
+        with self.assertRaises(ValueError):
+            DiTBlock(
+                hidden_size=16,
+                attention=SelfAttention(hidden_size=16, num_heads=4),
+                ffn=DenseFFN(hidden_size=8),
+            )
+        with self.assertRaises(ValueError):
+            DiTBlock(
+                hidden_size=16,
+                attention=SelfAttention(hidden_size=16, num_heads=4),
+                ffn=torch.nn.Identity(),
+            )
+        small_block = DiTBlock(
+            hidden_size=8,
+            attention=SelfAttention(hidden_size=8, num_heads=2),
+            ffn=DenseFFN(hidden_size=8),
+        )
+        with self.assertRaises(ValueError):
+            DiTBackbone(hidden_size=16, blocks=[small_block])
+
+    def test_scaled_dit_backbone_preserves_shape(self):
+        blocks = [
+            DiTBlock(
+                hidden_size=16,
+                attention=SelfAttention(
+                    hidden_size=16,
+                    num_heads=4,
+                    attention_width=16,
+                ),
+                ffn=DenseFFN(hidden_size=16, mlp_width=32),
+            ),
+            DiTBlock(
+                hidden_size=16,
+                attention=SelfAttention(
+                    hidden_size=16,
+                    num_heads=4,
+                    attention_width=32,
+                ),
+                ffn=ExpertChoiceMoEFFN(
+                    hidden_size=16,
+                    mlp_width=48,
+                    num_experts=2,
+                    expert_capacity=1.0,
+                ),
+            ),
+        ]
+        backbone = DiTBackbone(hidden_size=16, blocks=blocks)
+        x = torch.randn(2, 6, 16, requires_grad=True)
+        cond = torch.randn(2, 16)
+        coords = build_2d_patch_coords(2, 3)
+        y = backbone(x, cond, coords, RoPE2D())
+
+        self.assertEqual(y.shape, x.shape)
+        self.assertEqual(backbone.blocks[0].attention.attention_width, 16)
+        self.assertEqual(backbone.blocks[0].ffn.mlp_width, 32)
+        self.assertEqual(backbone.blocks[1].attention.attention_width, 32)
+        self.assertEqual(backbone.blocks[1].ffn.mlp_width, 48)
+
+        loss = y.square().mean()
+        loss.backward()
+        self.assertTrue(torch.isfinite(x.grad).all())
+
     def test_dense_ffn_default_activation_is_gelu_tanh(self):
         ffn = DenseFFN(hidden_size=8)
         self.assertIs(ffn.activation, ffn.net[1])
@@ -602,6 +697,79 @@ class DiTModelTest(unittest.TestCase):
             model, x, num_steps=2, cond=labels, guidance_scale=2.0
         )
         self.assertEqual(samples.shape, x.shape)
+
+    def test_hydra_layerwise_scaling_configs_define_explicit_widths(self):
+        from hydra import compose, initialize_config_dir
+        from hydra.core.global_hydra import GlobalHydra
+
+        config_dir = os.path.abspath("configs")
+        cases = [
+            (
+                "imagenet256_latent_dit_m2_layerwise",
+                "models_dit.DenseFFN",
+            ),
+            (
+                "imagenet256_latent_dit_m2_moe_layerwise",
+                "models_dit.ExpertChoiceMoEFFN",
+            ),
+        ]
+        expected_attention_widths = [
+            512,
+            576,
+            640,
+            704,
+            704,
+            768,
+            832,
+            896,
+            896,
+            960,
+            1024,
+            1024,
+        ]
+        expected_mlp_widths = [
+            512,
+            896,
+            1216,
+            1536,
+            1856,
+            2176,
+            2496,
+            2816,
+            3136,
+            3456,
+            3776,
+            4096,
+        ]
+        for experiment, odd_ffn_target in cases:
+            GlobalHydra.instance().clear()
+            with initialize_config_dir(config_dir=config_dir, version_base=None):
+                cfg = compose(
+                    config_name="config", overrides=[f"experiment={experiment}"]
+                )
+
+            blocks = cfg.model.backbone.blocks
+            self.assertEqual(len(blocks), 12)
+            self.assertEqual(
+                [block.attention.attention_width for block in blocks],
+                expected_attention_widths,
+            )
+            self.assertEqual(
+                [block.ffn.mlp_width for block in blocks],
+                expected_mlp_widths,
+            )
+            for idx, block in enumerate(blocks):
+                self.assertEqual(block.hidden_size, 1024)
+                self.assertEqual(block.attention.hidden_size, 1024)
+                self.assertEqual(block.attention.num_heads, 16)
+                self.assertEqual(block.attention.attention_width % (16 * 4), 0)
+                if odd_ffn_target == "models_dit.DenseFFN" or idx % 2 == 0:
+                    self.assertEqual(block.ffn._target_, "models_dit.DenseFFN")
+                else:
+                    self.assertEqual(block.ffn._target_, odd_ffn_target)
+                    self.assertEqual(block.ffn.num_experts, 8)
+                    self.assertEqual(block.ffn.expert_capacity, 2.0)
+            self.assertEqual(cfg.training.loss_mode, LossMode.masked_mse)
 
     def test_hydra_moe_configs_define_alternating_layerwise_blocks(self):
         from hydra import compose, initialize_config_dir
