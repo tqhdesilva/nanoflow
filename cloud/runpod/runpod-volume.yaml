@@ -3,6 +3,4 @@ name: nf-imagenet256
 # sky volumes apply --infra runpod/<country>/<data-center> cloud/runpod/runpod-volume.yaml
 infra: runpod
 type: runpod-network-volume
-# 240Gi leaves room for the 11Gi latent cache, dependency caches, checkpoints, logs, and pilot outputs.
-# Increase this if raw ImageNet images will also live on the network volume.
-size: 30Gi
+size: 100Gi

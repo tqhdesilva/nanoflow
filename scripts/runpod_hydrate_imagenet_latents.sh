@@ -51,6 +51,16 @@ fi
 
 GCS_URI="$DATASET_GCS_URI"
 
+cache_ready() {
+  [ -f "${LATENT_CACHE_ROOT}/metadata.json" ] \
+    && [ -f "${LATENT_CACHE_ROOT}/train/latents.npy" ] \
+    && [ -f "${LATENT_CACHE_ROOT}/train/labels.npy" ] \
+    && [ -f "${LATENT_CACHE_ROOT}/train/source_paths.txt" ] \
+    && [ -f "${LATENT_CACHE_ROOT}/val/latents.npy" ] \
+    && [ -f "${LATENT_CACHE_ROOT}/val/labels.npy" ] \
+    && [ -f "${LATENT_CACHE_ROOT}/val/source_paths.txt" ]
+}
+
 sudo_cmd=()
 if [ "$(id -u)" -ne 0 ]; then
   if command -v sudo >/dev/null 2>&1; then
@@ -86,18 +96,31 @@ install_gcloud() {
 
 auth_gcloud() {
   local key_file=""
+  local created_key_file="0"
+  local old_umask=""
   if [ -n "${GCP_SERVICE_ACCOUNT_JSON_B64:-}" ]; then
-    key_file="${RUNPOD_GCP_KEY_FILE:-/tmp/nanoflow-gcp-sa.json}"
+    key_file="${RUNPOD_GCP_KEY_FILE:-$(mktemp /tmp/nanoflow-gcp-sa.XXXXXX.json)}"
+    created_key_file="1"
+    old_umask="$(umask)"
+    umask 077
     printf '%s' "$GCP_SERVICE_ACCOUNT_JSON_B64" | base64 -d > "$key_file"
+    umask "$old_umask"
   elif [ -n "${GCP_SERVICE_ACCOUNT_JSON:-}" ]; then
-    key_file="${RUNPOD_GCP_KEY_FILE:-/tmp/nanoflow-gcp-sa.json}"
+    key_file="${RUNPOD_GCP_KEY_FILE:-$(mktemp /tmp/nanoflow-gcp-sa.XXXXXX.json)}"
+    created_key_file="1"
+    old_umask="$(umask)"
+    umask 077
     printf '%s' "$GCP_SERVICE_ACCOUNT_JSON" > "$key_file"
+    umask "$old_umask"
   elif [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] && [ -f "$GOOGLE_APPLICATION_CREDENTIALS" ]; then
     key_file="$GOOGLE_APPLICATION_CREDENTIALS"
   fi
 
   if [ -n "$key_file" ]; then
     gcloud auth activate-service-account --key-file "$key_file" >/dev/null
+    if [ "$created_key_file" = "1" ] && [ "${RUNPOD_KEEP_GCP_KEY:-0}" != "1" ]; then
+      rm -f "$key_file"
+    fi
   elif ! gcloud auth list --filter=status:ACTIVE --format='value(account)' | grep -q .; then
     cat >&2 <<'EOF'
 No active gcloud auth found.
@@ -119,6 +142,11 @@ if [ "${DRY_RUN:-0}" = "1" ]; then
   if [ "$LATENT_CACHE_LINK" != "$LATENT_CACHE_ROOT" ]; then
     echo "ln -sfn $LATENT_CACHE_ROOT $LATENT_CACHE_LINK"
   fi
+  exit 0
+fi
+
+if [ "${SKIP_SYNC_IF_PRESENT:-1}" = "1" ] && cache_ready; then
+  echo "latent cache already present: ${LATENT_CACHE_ROOT}"
   exit 0
 fi
 

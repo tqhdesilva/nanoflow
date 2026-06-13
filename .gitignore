@@ -28,3 +28,4 @@ runs/**
 .pi*
 !experiments/**/*.png
 .env
+.nanoflow_runpod_chains/
