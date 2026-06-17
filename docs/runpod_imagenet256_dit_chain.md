@@ -448,23 +448,6 @@ uv run python train.py experiment=imagenet256_latent_dit_m2_unmasked_finetune --
 uv run python eval_imagenet.py experiment=imagenet256_latent_dit_m2_masked --cfg job
 ```
 
-## H100 profile results
-
-D8 B2 MoE cost sweep, chain `m7-d8-cost-20260614-083657`, RunPod H100 SXM at `$3/hr`, no gradient checkpointing, 20 train steps:
-
-| Profile | Samples/sec | Peak GiB | 400 epoch cost | Routing selected | Routing multi |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `d8_c2_moew05_bs1024` | 2570 | 35.5 | `$166.14` | 0.985 | 0.728 |
-| `d8_c2_moew05_bs2048` | 3090 | 69.2 | `$138.19` | 0.986 | 0.734 |
-| `d8_c2_ffnw05_bs1024` | 3229 | 33.9 | `$132.27` | 0.985 | 0.727 |
-| `d8_c2_ffnw05_bs2048` | 3668 | 66.1 | `$116.43` | 0.986 | 0.737 |
-| `d8_c1_bs1024` | 3482 | 35.0 | `$122.65` | 0.762 | 0.218 |
-| `d8_c1_bs2048` | 3941 | 67.5 | `$108.35` | 0.765 | 0.216 |
-| `d8_c1_ffnw05_bs1024` | 3676 | 31.0 | `$116.18` | 0.769 | 0.214 |
-| `d8_c1_ffnw05_bs2048` | 4152 | 60.2 | `$102.86` | 0.765 | 0.217 |
-
-Current best cost profile is `d8_c1_ffnw05_bs2048`. `expert_capacity=1.0` skips about 23 to 24 percent of tokens per MoE layer at init, but every other backbone layer remains dense.
-
 ## Notes
 
 - Use exact GPU SKUs such as `H100-SXM:1`.
