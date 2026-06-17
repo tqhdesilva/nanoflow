@@ -237,6 +237,11 @@ class LossMode(str, Enum):
     masked_mse = "masked_mse"
 
 
+class OptimizerType(str, Enum):
+    adam = "adam"
+    adamw = "adamw"
+
+
 class InitFromWeights(str, Enum):
     raw = "raw"
     ema = "ema"
@@ -247,6 +252,8 @@ class TrainingConfig:
     epochs: int = 100
     batch_size: int = 128
     lr: float = 1e-3
+    optimizer: OptimizerType = OptimizerType.adam
+    weight_decay: float = 0.0
     warmup_epochs: int = 0
     # Epoch-based cadences. Set to 0 to disable periodic checkpointing or eval.
     checkpoint_every: int = 10
@@ -257,6 +264,7 @@ class TrainingConfig:
     run_dir: Optional[str] = None
     run_prefix: str = "${dataset.name}"
     log_every: int = 50
+    log_moe_stats: bool = False
     grad_clip: float = 1.0
     ema_decay: float = 0
     num_workers: int = 0
@@ -579,6 +587,11 @@ def _register() -> None:
     cs.store(
         group="model",
         name="classcond_deferred_dit_imagenet256_latent_m2_moe_schema",
+        node=ClassCondDeferredMaskingDiTImageNet256LatentConfig,
+    )
+    cs.store(
+        group="model",
+        name="classcond_deferred_dit_imagenet256_latent_b2_moe_layerwise_schema",
         node=ClassCondDeferredMaskingDiTImageNet256LatentConfig,
     )
     cs.store(group="vae", name="vae_schema", node=VAEConfig)

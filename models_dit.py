@@ -399,7 +399,7 @@ class ExpertChoiceMoEFFN(nn.Module):
             weighted_output = expert_output * weights.to(expert_output.dtype).unsqueeze(
                 -1
             )
-            output.scatter_add_(1, gather_index, weighted_output)
+            output.scatter_add_(1, gather_index, weighted_output.to(output.dtype))
             if self.collect_routing_stats:
                 selected_indices.append(indices)
         if self.collect_routing_stats:

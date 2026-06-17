@@ -270,6 +270,48 @@ Smoke success means the cloud output contains:
 
 For longer runs, copy the chain YAML and edit the training or eval commands in YAML. Keep stage logic in YAML rather than adding launcher presets.
 
+## M7 profile chain
+
+`cloud/runpod/imagenet256-dit-m7-profile-chain.yaml` runs a single GPU stage with several short profiles. Each profile writes `training_profile.jsonl`, `gpu_util.csv`, `cost_estimate.json`, and an entry in `profile_summary.json`.
+
+`cloud/runpod/imagenet256-dit-m7-moe-profile-chain.yaml` is the patched MoE-only follow-up profile chain. Use it after changing MoE code or when only sparse profiles need to be rerun.
+
+Dry run:
+
+```bash
+scripts/sky_runpod_chain.py cloud/runpod/imagenet256-dit-m7-profile-chain.yaml \
+  --dry-run \
+  --chain-id imagenet256-m7-profile \
+  --infra auto \
+  --gpu-request H100-SXM:1 \
+  --volume-name nf-imagenet256 \
+  --volume-size 100Gi \
+  --image-id docker:ghcr.io/tqhdesilva/nanoflow:runpod-cu124 \
+  --artifact-cloud-uri gs://nanoflow/runs \
+  --gcp-credentials ~/.config/gcp/nanoflow-gcs-reader.json
+```
+
+Launch is the same command without `--dry-run`. Override profile length or price in the YAML envs before launch if needed: `PROFILE_STEPS`, `GPU_HOUR_PRICE`, `NUM_GPUS`, and `KEEP_PROFILE_CHECKPOINTS`.
+
+For any local or downloaded profile:
+
+```bash
+uv run python scripts/estimate_training_cost.py \
+  --profile /path/to/training_profile.jsonl \
+  --epochs 400 \
+  --gpu-hour-price 3.00
+```
+
+First M7 H100 profile snapshot from `m7-profile-20260613-162229`:
+
+| Profile | Samples/sec | 400 epoch projection at `$3/hr` | Notes |
+| --- | ---: | ---: | --- |
+| `vanilla_m2_bs64` | 391 | `$1091` | too expensive |
+| `m2_layerwise_bs192` | 1101 | `$388` | cheaper, still above target for 400 epochs |
+| `m2_moe_layerwise_bs96` | 457 | `$935` | patched MoE, slower than dense |
+| `m2_moe_layerwise_bs192` | 734 | `$582` | patched MoE, better batch throughput |
+| `b2_moe_layerwise_bs256` | 1147 | `$372` | patched MoE, best short profile so far |
+
 ## Monitoring
 
 Check status:
@@ -405,6 +447,23 @@ uv run python train.py experiment=imagenet256_latent_dit_m2_masked --cfg job
 uv run python train.py experiment=imagenet256_latent_dit_m2_unmasked_finetune --cfg job
 uv run python eval_imagenet.py experiment=imagenet256_latent_dit_m2_masked --cfg job
 ```
+
+## H100 profile results
+
+D8 B2 MoE cost sweep, chain `m7-d8-cost-20260614-083657`, RunPod H100 SXM at `$3/hr`, no gradient checkpointing, 20 train steps:
+
+| Profile | Samples/sec | Peak GiB | 400 epoch cost | Routing selected | Routing multi |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `d8_c2_moew05_bs1024` | 2570 | 35.5 | `$166.14` | 0.985 | 0.728 |
+| `d8_c2_moew05_bs2048` | 3090 | 69.2 | `$138.19` | 0.986 | 0.734 |
+| `d8_c2_ffnw05_bs1024` | 3229 | 33.9 | `$132.27` | 0.985 | 0.727 |
+| `d8_c2_ffnw05_bs2048` | 3668 | 66.1 | `$116.43` | 0.986 | 0.737 |
+| `d8_c1_bs1024` | 3482 | 35.0 | `$122.65` | 0.762 | 0.218 |
+| `d8_c1_bs2048` | 3941 | 67.5 | `$108.35` | 0.765 | 0.216 |
+| `d8_c1_ffnw05_bs1024` | 3676 | 31.0 | `$116.18` | 0.769 | 0.214 |
+| `d8_c1_ffnw05_bs2048` | 4152 | 60.2 | `$102.86` | 0.765 | 0.217 |
+
+Current best cost profile is `d8_c1_ffnw05_bs2048`. `expert_capacity=1.0` skips about 23 to 24 percent of tokens per MoE layer at init, but every other backbone layer remains dense.
 
 ## Notes
 

@@ -8,7 +8,7 @@ from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, TensorDataset
 
 from callbacks import CheckpointCallback, RunDirCallback
-from config import InitFromWeights, LossMode, TrainingConfig
+from config import InitFromWeights, LossMode, OptimizerType, TrainingConfig
 from flow import CondOT
 from models import MLP
 from train import Trainer, _build_callbacks
@@ -110,6 +110,26 @@ class TrainingControlsTest(unittest.TestCase):
 
         with self.assertRaises(Exception):
             cfg.init_from_weights = "bad"
+
+    def test_optimizer_is_enum_validated(self):
+        cfg = OmegaConf.structured(TrainingConfig)
+        self.assertEqual(cfg.optimizer, OptimizerType.adam)
+
+        cfg.optimizer = "adamw"
+        self.assertEqual(cfg.optimizer, OptimizerType.adamw)
+
+        with self.assertRaises(Exception):
+            cfg.optimizer = "bad"
+
+    def test_adamw_and_weight_decay_are_configurable(self):
+        training = TrainingConfig(
+            optimizer=OptimizerType.adamw,
+            weight_decay=0.01,
+        )
+        trainer = self._make_toy_trainer(training)
+
+        self.assertIsInstance(trainer.optimizer, torch.optim.AdamW)
+        self.assertEqual(trainer.optimizer.param_groups[0]["weight_decay"], 0.01)
 
     def test_masked_mse_uses_aux_loss_mask(self):
         training = TrainingConfig(

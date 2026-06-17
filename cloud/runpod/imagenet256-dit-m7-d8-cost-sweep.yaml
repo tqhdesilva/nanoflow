@@ -1,0 +1,238 @@
+name: nf-imagenet256-dit-m7-d8-${CHAIN_ID}
+execution: serial
+
+---
+name: sync_inputs
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  cpus: 1+
+  memory: 4+
+  disk_size: 5
+  image_id: ${SYNC_IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+file_mounts:
+  /tmp/nanoflow-rendered-chain.yaml: ${RENDERED_CHAIN_PATH}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  RUNPOD_INFRA: ${RUNPOD_INFRA}
+  GPU_REQUEST: ${GPU_REQUEST}
+  VOLUME_NAME: ${VOLUME_NAME}
+  VOLUME_SIZE: ${VOLUME_SIZE}
+  IMAGE_ID: ${IMAGE_ID}
+  SYNC_IMAGE_ID: ${SYNC_IMAGE_ID}
+  DATASET_CLOUD_URI: ${DATASET_CLOUD_URI}
+  DATASET_GCS_URI: ${DATASET_CLOUD_URI}
+  DATASET_CACHE_ROOT: /workspace/latent-caches/imagenet256/current
+  LATENT_CACHE_LINK: /workspace/latent-caches/imagenet256/current
+  ARTIFACT_CLOUD_URI: ${ARTIFACT_CLOUD_URI}
+  INSTALL_GCLOUD: "1"
+  LOAD_ENV_FILE: "0"
+  SKIP_SYNC_IF_PRESENT: "1"
+run: |
+  set -euo pipefail
+  mkdir -p "/workspace/runs/$CHAIN_ID"
+  cp /tmp/nanoflow-rendered-chain.yaml "/workspace/runs/$CHAIN_ID/chain.yaml"
+  bash scripts/runpod_hydrate_imagenet_latents.sh
+  python scripts/preflight_imagenet_latent_mmap.py \
+    --cache-root /workspace/latent-caches/imagenet256/current \
+    --batch-size 8 \
+    --num-workers 2
+
+---
+name: profile_runs
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  accelerators: ${GPU_REQUEST}
+  disk_size: 100
+  image_id: ${IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  DATASET_CACHE_ROOT: /workspace/latent-caches/imagenet256/current
+  LATENT_CACHE_LINK: /workspace/latent-caches/imagenet256/current
+  RUNS_DIR: /workspace/runs
+  HF_HOME: /workspace/.cache/huggingface
+  TORCH_HOME: /workspace/.cache/torch
+  TMPDIR: /tmp
+  HYDRA_FULL_ERROR: "1"
+  PROFILE_STEPS: "20"
+  PROFILE_LOG_EVERY: "5"
+  PROFILE_NUM_WORKERS: "8"
+  GPU_HOUR_PRICE: "3.00"
+  NUM_GPUS: "1"
+  KEEP_PROFILE_CHECKPOINTS: "0"
+run: |
+  set -euo pipefail
+  mkdir -p "$HF_HOME" "$TORCH_HOME" "$TMPDIR" "$RUNS_DIR" "/workspace/runs/$CHAIN_ID"
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi
+  fi
+  python scripts/runpod_cuda_smoke.py
+
+  run_profile() {
+    local name="$1"
+    shift
+    local out="/workspace/runs/$CHAIN_ID/$name"
+    local status=0
+    local monitor_pid=""
+    mkdir -p "$out"
+    echo "profile=$name" | tee "$out/profile_info.txt"
+    if command -v nvidia-smi >/dev/null 2>&1; then
+      nvidia-smi \
+        --query-gpu=timestamp,index,utilization.gpu,utilization.memory,memory.used,memory.total,power.draw \
+        --format=csv \
+        -l 2 > "$out/gpu_util.csv" 2>&1 &
+      monitor_pid="$!"
+    fi
+    set +e
+    "$@" 2>&1 | tee "$out/train_console.log"
+    status=${PIPESTATUS[0]}
+    set -e
+    if [ -n "$monitor_pid" ]; then
+      kill "$monitor_pid" >/dev/null 2>&1 || true
+      wait "$monitor_pid" >/dev/null 2>&1 || true
+    fi
+    echo "$status" > "$out/exit_status.txt"
+    if [ "$status" -ne 0 ]; then
+      echo "profile $name failed with status $status"
+      return 0
+    fi
+    if [ -s "$out/checkpoints/latest.pt" ]; then
+      echo "latest.pt written" > "$out/checkpoint_ok.txt"
+      if [ "${KEEP_PROFILE_CHECKPOINTS:-0}" != "1" ]; then
+        rm -f "$out/checkpoints/latest.pt"
+      fi
+    fi
+    if [ -s "$out/training_profile.jsonl" ]; then
+      python scripts/estimate_training_cost.py \
+        --profile "$out/training_profile.jsonl" \
+        --epochs 400 \
+        --gpu-hour-price "${GPU_HOUR_PRICE:-3.00}" \
+        --num-gpus "${NUM_GPUS:-1}" \
+        --output "$out/cost_estimate.json"
+    fi
+  }
+
+  common_train_args=(
+    device=cuda
+    dataset.cache_root=/workspace/latent-caches/imagenet256/current
+    model.use_gradient_checkpointing=false
+    training.resume=null
+    training.epochs=1
+    training.max_steps="$PROFILE_STEPS"
+    training.eval_every=0
+    training.checkpoint_every=0
+    training.log_every="$PROFILE_LOG_EVERY"
+    training.num_workers="$PROFILE_NUM_WORKERS"
+    train_loader.persistent_workers=true
+    val_loader.persistent_workers=true
+    training.precision=bf16
+    training.optimizer=adamw
+    training.weight_decay=0.01
+    training.log_moe_stats=true
+    inference=null
+    sample_logger=null
+  )
+
+  run_profile d8_c2_moew05_bs1024 \
+    python train.py \
+      experiment=imagenet256_latent_dit_b2_moe_layerwise_d8_c2_moew05 \
+      training.batch_size=1024 \
+      "training.run_dir=/workspace/runs/$CHAIN_ID/d8_c2_moew05_bs1024" \
+      "${common_train_args[@]}"
+
+  run_profile d8_c2_moew05_bs2048 \
+    python train.py \
+      experiment=imagenet256_latent_dit_b2_moe_layerwise_d8_c2_moew05 \
+      training.batch_size=2048 \
+      "training.run_dir=/workspace/runs/$CHAIN_ID/d8_c2_moew05_bs2048" \
+      "${common_train_args[@]}"
+
+  run_profile d8_c2_ffnw05_bs1024 \
+    python train.py \
+      experiment=imagenet256_latent_dit_b2_moe_layerwise_d8_c2_ffnw05 \
+      training.batch_size=1024 \
+      "training.run_dir=/workspace/runs/$CHAIN_ID/d8_c2_ffnw05_bs1024" \
+      "${common_train_args[@]}"
+
+  run_profile d8_c2_ffnw05_bs2048 \
+    python train.py \
+      experiment=imagenet256_latent_dit_b2_moe_layerwise_d8_c2_ffnw05 \
+      training.batch_size=2048 \
+      "training.run_dir=/workspace/runs/$CHAIN_ID/d8_c2_ffnw05_bs2048" \
+      "${common_train_args[@]}"
+
+  run_profile d8_c1_bs1024 \
+    python train.py \
+      experiment=imagenet256_latent_dit_b2_moe_layerwise_d8_c1 \
+      training.batch_size=1024 \
+      "training.run_dir=/workspace/runs/$CHAIN_ID/d8_c1_bs1024" \
+      "${common_train_args[@]}"
+
+  run_profile d8_c1_bs2048 \
+    python train.py \
+      experiment=imagenet256_latent_dit_b2_moe_layerwise_d8_c1 \
+      training.batch_size=2048 \
+      "training.run_dir=/workspace/runs/$CHAIN_ID/d8_c1_bs2048" \
+      "${common_train_args[@]}"
+
+  run_profile d8_c1_ffnw05_bs1024 \
+    python train.py \
+      experiment=imagenet256_latent_dit_b2_moe_layerwise_d8_c1_ffnw05 \
+      training.batch_size=1024 \
+      "training.run_dir=/workspace/runs/$CHAIN_ID/d8_c1_ffnw05_bs1024" \
+      "${common_train_args[@]}"
+
+  run_profile d8_c1_ffnw05_bs2048 \
+    python train.py \
+      experiment=imagenet256_latent_dit_b2_moe_layerwise_d8_c1_ffnw05 \
+      training.batch_size=2048 \
+      "training.run_dir=/workspace/runs/$CHAIN_ID/d8_c1_ffnw05_bs2048" \
+      "${common_train_args[@]}"
+
+  python - <<'PY' "/workspace/runs/$CHAIN_ID"
+  import json
+  import sys
+  from pathlib import Path
+
+  root = Path(sys.argv[1])
+  rows = []
+  for path in sorted(root.glob("*/cost_estimate.json")):
+      row = json.loads(path.read_text())
+      row["profile"] = path.parent.name
+      status_path = path.parent / "exit_status.txt"
+      row["exit_status"] = int(status_path.read_text()) if status_path.exists() else None
+      rows.append(row)
+  for path in sorted(root.glob("*/exit_status.txt")):
+      if any(row["profile"] == path.parent.name for row in rows):
+          continue
+      rows.append({"profile": path.parent.name, "exit_status": int(path.read_text())})
+  summary = {"chain_id": root.name, "profiles": rows}
+  (root / "profile_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+  print(json.dumps(summary, indent=2, sort_keys=True))
+  PY
+
+---
+name: sync_artifacts
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  cpus: 1+
+  memory: 4+
+  disk_size: 5
+  image_id: ${SYNC_IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  ARTIFACT_CLOUD_URI: ${ARTIFACT_CLOUD_URI}
+  INSTALL_GCLOUD: "1"
+run: |
+  set -euo pipefail
+  bash scripts/runpod_gcs_rsync.sh \
+    "/workspace/runs/$CHAIN_ID" \
+    "$ARTIFACT_CLOUD_URI/$CHAIN_ID"

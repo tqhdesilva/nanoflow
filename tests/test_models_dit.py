@@ -579,6 +579,21 @@ class DiTModelTest(unittest.TestCase):
         self.assertIsInstance(backbone.blocks[0].ffn, DenseFFN)
         self.assertIsInstance(backbone.blocks[1].ffn, ExpertChoiceMoEFFN)
 
+    def test_moe_forward_keeps_scatter_dtype_under_autocast(self):
+        moe = ExpertChoiceMoEFFN(
+            hidden_size=8,
+            mlp_width=16,
+            num_experts=4,
+            expert_capacity=2.0,
+        )
+        x = torch.randn(2, 8, 8)
+
+        with torch.amp.autocast(device_type="cpu", dtype=torch.bfloat16):
+            y = moe(x)
+
+        self.assertEqual(y.dtype, x.dtype)
+        self.assertEqual(y.shape, x.shape)
+
     def test_collect_moe_routing_stats_names_layers(self):
         moe = ExpertChoiceMoEFFN(
             hidden_size=8,
@@ -770,6 +785,41 @@ class DiTModelTest(unittest.TestCase):
                     self.assertEqual(block.ffn.num_experts, 8)
                     self.assertEqual(block.ffn.expert_capacity, 2.0)
             self.assertEqual(cfg.training.loss_mode, LossMode.masked_mse)
+
+    def test_hydra_b2_moe_layerwise_config_scales_widths_down(self):
+        from hydra import compose, initialize_config_dir
+        from hydra.core.global_hydra import GlobalHydra
+
+        GlobalHydra.instance().clear()
+        config_dir = os.path.abspath("configs")
+        with initialize_config_dir(config_dir=config_dir, version_base=None):
+            cfg = compose(
+                config_name="config",
+                overrides=["experiment=imagenet256_latent_dit_b2_moe_layerwise"],
+            )
+
+        self.assertEqual(cfg.model.patch_mixer.hidden_size, 512)
+        self.assertEqual(cfg.model.backbone.hidden_size, 768)
+        self.assertEqual(cfg.training.loss_mode, LossMode.masked_mse)
+        blocks = cfg.model.backbone.blocks
+        self.assertEqual(
+            [block.attention.attention_width for block in blocks],
+            [384, 432, 480, 528, 528, 576, 624, 672, 672, 720, 768, 768],
+        )
+        self.assertEqual(
+            [block.ffn.mlp_width for block in blocks],
+            [384, 672, 912, 1152, 1392, 1632, 1872, 2112, 2352, 2592, 2832, 3072],
+        )
+        for idx, block in enumerate(blocks):
+            self.assertEqual(block.hidden_size, 768)
+            self.assertEqual(block.attention.num_heads, 12)
+            self.assertEqual(block.attention.attention_width % (12 * 4), 0)
+            expected_ffn = (
+                "models_dit.DenseFFN"
+                if idx % 2 == 0
+                else "models_dit.ExpertChoiceMoEFFN"
+            )
+            self.assertEqual(block.ffn._target_, expected_ffn)
 
     def test_hydra_moe_configs_define_alternating_layerwise_blocks(self):
         from hydra import compose, initialize_config_dir

@@ -30,6 +30,7 @@ from callbacks import (
     CheckpointCallback,
     EpochSummaryCallback,
     LRMonitorCallback,
+    MoERoutingStatsCallback,
     RunDirCallback,
     SampleLoggerCallback,
     StepLossCallback,
@@ -95,7 +96,7 @@ class Trainer:
         else:
             raise ValueError(f"Unknown distributed strategy: {distributed!r}")
 
-        self.optimizer = torch.optim.Adam(self.raw_module.parameters(), lr=training.lr)
+        self.optimizer = self._build_optimizer(self.raw_module.parameters(), training)
         self.lr_scheduler = None
 
         ema_decay = getattr(training, "ema_decay", 0) or 0
@@ -121,6 +122,25 @@ class Trainer:
         self.losses: list[float] = []
         self._reset_train_epoch_metrics()
         self._reset_val_epoch_metrics()
+
+    @staticmethod
+    def _build_optimizer(parameters, training):
+        optimizer = getattr(training, "optimizer", "adam")
+        optimizer = optimizer.value if hasattr(optimizer, "value") else str(optimizer)
+        weight_decay = float(getattr(training, "weight_decay", 0.0))
+        if optimizer == "adam":
+            return torch.optim.Adam(
+                parameters,
+                lr=training.lr,
+                weight_decay=weight_decay,
+            )
+        if optimizer == "adamw":
+            return torch.optim.AdamW(
+                parameters,
+                lr=training.lr,
+                weight_decay=weight_decay,
+            )
+        raise ValueError("training.optimizer must be 'adam' or 'adamw'")
 
     @staticmethod
     def _build_scheduler(optimizer, training, steps_per_epoch: int):
@@ -476,11 +496,20 @@ def _build_callbacks(cfg, run_dir_cb: RunDirCallback) -> list:
             writer=writer,
             total_epochs=cfg.training.epochs,
             batch_size=cfg.training.batch_size,
+            run_dir=run_dir_cb.run_dir,
         ),
         ckpt_cb,
         StepLossCallback(writer=writer, log_every=cfg.training.log_every),
         LRMonitorCallback(writer=writer, log_every=cfg.training.log_every),
     ]
+    if OmegaConf.select(cfg, "training.log_moe_stats", default=False):
+        callbacks.append(
+            MoERoutingStatsCallback(
+                writer=writer,
+                log_every=cfg.training.log_every,
+                run_dir=run_dir_cb.run_dir,
+            )
+        )
     if cfg.get("sample_logger") is not None:
         scfg = cfg.sample_logger
         callbacks.append(

@@ -212,18 +212,27 @@ class RunPodChainTest(unittest.TestCase):
             )
             launch = build_jobs_launch_command(values)
             self.assertEqual(launch[:4], ["sky", "jobs", "launch", "-n"])
+            self.assertIn("--detach-run", launch)
             self.assertNotIn("--config", launch)
-            self.assertIn("--secret-file", launch)
-            secret_path = Path(launch[launch.index("--secret-file") + 1])
-            self.assertFalse(secret_path.exists())
+            self.assertNotIn("--secret-file", launch)
             encoded = base64.b64encode(key.read_bytes()).decode("ascii")
-            self.assertEqual(write_secret_file(values), secret_path)
-            self.assertEqual(
-                secret_path.read_text(),
-                f"GCP_SERVICE_ACCOUNT_JSON_B64={encoded}\n",
-            )
-            self.assertNotIn(encoded, launch)
-            self.assertEqual(launch[-2:], ["-y", str(rendered)])
+            secret_path = write_secret_file(values)
+            try:
+                self.assertEqual(secret_path.parent, Path(tempfile.gettempdir()) / "nanoflow-runpod-chain")
+                self.assertTrue(secret_path.name.startswith("chain-a."))
+                self.assertTrue(secret_path.name.endswith(".secrets.env"))
+                self.assertEqual(
+                    secret_path.read_text(),
+                    f"GCP_SERVICE_ACCOUNT_JSON_B64={encoded}\n",
+                )
+                launch_with_secret = build_jobs_launch_command(
+                    values, secret_path=secret_path
+                )
+                self.assertIn(str(secret_path), launch_with_secret)
+                self.assertNotIn(encoded, launch_with_secret)
+                self.assertEqual(launch_with_secret[-2:], ["-y", str(rendered)])
+            finally:
+                secret_path.unlink(missing_ok=True)
 
     def test_smoke_chain_template_has_expected_serial_tasks(self):
         template = Path("cloud/runpod/imagenet256-dit-smoke-chain.yaml")
@@ -281,6 +290,99 @@ class RunPodChainTest(unittest.TestCase):
             joined,
         )
         self.assertNotIn("python scripts/sky_runpod_chain.py", joined)
+
+    def test_m7_profile_chain_renders_profile_sweep(self):
+        template = Path("cloud/runpod/imagenet256-dit-m7-profile-chain.yaml")
+        text = template.read_text()
+        values = {
+            "CHAIN_ID": "chain-a",
+            "RUNPOD_INFRA": "runpod/NL/EU-NL-1",
+            "GPU_REQUEST": "H100-SXM:1",
+            "VOLUME_NAME": "nf-test",
+            "IMAGE_ID": "docker:image:tag",
+            "SYNC_IMAGE_ID": "docker:image:tag",
+            "DATASET_CLOUD_URI": "gs://nanoflow/data",
+            "ARTIFACT_CLOUD_URI": "gs://nanoflow/runs",
+            "CHAIN_TEMPLATE_PATH": "cloud/runpod/imagenet256-dit-m7-profile-chain.yaml",
+            "RENDERED_CHAIN_PATH": ".nanoflow_runpod_chains/chain-a.yaml",
+            "VOLUME_SIZE": "100Gi",
+        }
+        rendered = render_template_text(text, values)
+        docs = list(yaml.safe_load_all(rendered))
+
+        self.assertEqual(
+            docs[0], {"name": "nf-imagenet256-dit-m7-chain-a", "execution": "serial"}
+        )
+        self.assertEqual(
+            [doc["name"] for doc in docs[1:]],
+            ["sync_inputs", "profile_runs", "sync_artifacts"],
+        )
+        profile_run = docs[2]["run"]
+        self.assertIn("experiment=imagenet256_latent_dit_m2", profile_run)
+        self.assertIn("imagenet256_latent_dit_m2_moe_layerwise", profile_run)
+        self.assertIn("imagenet256_latent_dit_b2_moe_layerwise", profile_run)
+        self.assertIn("training.max_steps=\"$PROFILE_STEPS\"", profile_run)
+        self.assertIn("training.log_moe_stats=true", profile_run)
+        self.assertIn("scripts/estimate_training_cost.py", profile_run)
+        self.assertIn("training_profile.jsonl", profile_run)
+        self.assertIn("profile_summary.json", profile_run)
+
+    def test_m7_nockpt_batch_sweep_renders_large_batches(self):
+        template = Path("cloud/runpod/imagenet256-dit-m7-nockpt-batch-sweep.yaml")
+        text = template.read_text()
+        values = {
+            "CHAIN_ID": "chain-a",
+            "RUNPOD_INFRA": "runpod/NL/EU-NL-1",
+            "GPU_REQUEST": "H100-SXM:1",
+            "VOLUME_NAME": "nf-test",
+            "IMAGE_ID": "docker:image:tag",
+            "SYNC_IMAGE_ID": "docker:image:tag",
+            "DATASET_CLOUD_URI": "gs://nanoflow/data",
+            "ARTIFACT_CLOUD_URI": "gs://nanoflow/runs",
+            "CHAIN_TEMPLATE_PATH": "cloud/runpod/imagenet256-dit-m7-nockpt-batch-sweep.yaml",
+            "RENDERED_CHAIN_PATH": ".nanoflow_runpod_chains/chain-a.yaml",
+            "VOLUME_SIZE": "100Gi",
+        }
+        rendered = render_template_text(text, values)
+        docs = list(yaml.safe_load_all(rendered))
+
+        self.assertEqual(
+            docs[0], {"name": "nf-imagenet256-dit-m7-nockpt-chain-a", "execution": "serial"}
+        )
+        profile_run = docs[2]["run"]
+        self.assertIn("model.use_gradient_checkpointing=false", profile_run)
+        self.assertIn("m2_moe_layerwise_nockpt_bs768", profile_run)
+        self.assertIn("b2_moe_layerwise_nockpt_bs1024", profile_run)
+        self.assertIn("training.batch_size=1024", profile_run)
+
+    def test_m7_moe_profile_chain_renders_moe_only_sweep(self):
+        template = Path("cloud/runpod/imagenet256-dit-m7-moe-profile-chain.yaml")
+        text = template.read_text()
+        values = {
+            "CHAIN_ID": "chain-a",
+            "RUNPOD_INFRA": "runpod/NL/EU-NL-1",
+            "GPU_REQUEST": "H100-SXM:1",
+            "VOLUME_NAME": "nf-test",
+            "IMAGE_ID": "docker:image:tag",
+            "SYNC_IMAGE_ID": "docker:image:tag",
+            "DATASET_CLOUD_URI": "gs://nanoflow/data",
+            "ARTIFACT_CLOUD_URI": "gs://nanoflow/runs",
+            "CHAIN_TEMPLATE_PATH": "cloud/runpod/imagenet256-dit-m7-moe-profile-chain.yaml",
+            "RENDERED_CHAIN_PATH": ".nanoflow_runpod_chains/chain-a.yaml",
+            "VOLUME_SIZE": "100Gi",
+        }
+        rendered = render_template_text(text, values)
+        docs = list(yaml.safe_load_all(rendered))
+
+        self.assertEqual(
+            docs[0], {"name": "nf-imagenet256-dit-m7-moe-chain-a", "execution": "serial"}
+        )
+        profile_run = docs[2]["run"]
+        self.assertIn("m2_moe_layerwise_bs96", profile_run)
+        self.assertIn("m2_moe_layerwise_bs192", profile_run)
+        self.assertIn("b2_moe_layerwise_bs256", profile_run)
+        self.assertNotIn("vanilla_m2_bs64", profile_run)
+        self.assertIn("training.log_moe_stats=true", profile_run)
 
     def test_latent_mmap_preflight_validates_arrays_and_batches(self):
         with tempfile.TemporaryDirectory() as tmp:

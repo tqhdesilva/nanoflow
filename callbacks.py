@@ -8,6 +8,7 @@ on_train_cleanup.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import tempfile
@@ -254,10 +255,14 @@ class CheckpointCallback:
 
 
 class EpochSummaryCallback:
-    """Rank-0 console summary + epoch-level scalars (loss, val/loss, throughput)."""
+    """Rank-0 console summary + epoch-level scalars and throughput profile."""
 
     def __init__(
-        self, writer: Optional[SummaryWriter], total_epochs: int, batch_size: int
+        self,
+        writer: Optional[SummaryWriter],
+        total_epochs: int,
+        batch_size: int,
+        run_dir: Optional[Path] = None,
     ):
         self.rank = _rank()
         self.writer = writer
@@ -265,7 +270,9 @@ class EpochSummaryCallback:
         self.batch_size = batch_size
         self.world_size = _world_size()
         self.global_batch_size = batch_size * self.world_size
+        self.run_dir = Path(run_dir) if run_dir is not None else None
         self._epoch_start = 0.0
+        self._epoch_start_step = 0
 
     def on_train_start(self, trainer) -> None:
         if self.rank != 0 or self.writer is None:
@@ -279,6 +286,9 @@ class EpochSummaryCallback:
 
     def on_train_epoch_start(self, trainer) -> None:
         self._epoch_start = time.perf_counter()
+        self._epoch_start_step = getattr(trainer, "step", 0)
+        if trainer.device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(trainer.device)
 
     def on_eval_epoch_start(self, trainer) -> None:
         pass
@@ -294,15 +304,43 @@ class EpochSummaryCallback:
         avg_loss = loss_sum / max(sample_count, 1)
         trainer.losses.append(avg_loss)
         throughput = sample_count / max(epoch_time, 1e-6)
+        optimizer_steps = max(getattr(trainer, "step", 0) - self._epoch_start_step, 0)
+        optimizer_steps_per_sec = optimizer_steps / max(epoch_time, 1e-6)
+        peak_memory_gib = None
+        if trainer.device.type == "cuda":
+            peak_memory_gib = torch.cuda.max_memory_allocated(trainer.device) / 2**30
+        profile = {
+            "epoch": int(epoch),
+            "loss": float(avg_loss),
+            "sample_count": int(sample_count),
+            "optimizer_steps": int(optimizer_steps),
+            "epoch_sec": float(epoch_time),
+            "samples_per_sec": float(throughput),
+            "optimizer_steps_per_sec": float(optimizer_steps_per_sec),
+            "global_batch_size": int(self.global_batch_size),
+            "peak_gpu_memory_allocated_gib": peak_memory_gib,
+        }
+        if self.rank == 0 and self.run_dir is not None:
+            with open(self.run_dir / "training_profile.jsonl", "a") as handle:
+                handle.write(json.dumps(profile, sort_keys=True) + "\n")
         if self.rank != 0 or self.writer is None:
             return
+        mem_text = ""
+        if peak_memory_gib is not None:
+            mem_text = f" | peak_mem={peak_memory_gib:.1f}GiB"
         print(
             f"Epoch {epoch}/{self.total_epochs} | loss={avg_loss:.4f} | "
-            f"{throughput:.0f} sam/s | {epoch_time:.1f}s"
+            f"{throughput:.0f} sam/s | {optimizer_steps_per_sec:.2f} opt/s | "
+            f"{epoch_time:.1f}s{mem_text}"
         )
         self.writer.add_scalar("train/epoch_loss", avg_loss, epoch)
         self.writer.add_scalar("timing/epoch_sec", epoch_time, epoch)
         self.writer.add_scalar("timing/samples_per_sec", throughput, epoch)
+        self.writer.add_scalar(
+            "timing/optimizer_steps_per_sec", optimizer_steps_per_sec, epoch
+        )
+        if peak_memory_gib is not None:
+            self.writer.add_scalar("timing/peak_gpu_memory_gib", peak_memory_gib, epoch)
 
     def on_eval_epoch_end(self, trainer) -> None:
         loss_sum, sample_count = _distributed_loss_stats(
@@ -355,6 +393,67 @@ class LRMonitorCallback:
             return
         lr = trainer.optimizer.param_groups[0]["lr"]
         self.writer.add_scalar("train/lr", lr, trainer.step)
+
+
+class MoERoutingStatsCallback:
+    """Enable and log rank-local sparse MoE router diagnostics for profile runs."""
+
+    def __init__(
+        self,
+        writer: Optional[SummaryWriter],
+        log_every: int,
+        run_dir: Optional[Path] = None,
+    ):
+        self.rank = _rank()
+        self.writer = writer
+        self.log_every = max(int(log_every), 1)
+        self.run_dir = Path(run_dir) if run_dir is not None else None
+        self.enabled = False
+
+    def on_train_start(self, trainer) -> None:
+        from models_dit import ExpertChoiceMoEFFN
+
+        count = 0
+        for module in trainer.raw_module.modules():
+            if isinstance(module, ExpertChoiceMoEFFN):
+                module.collect_routing_stats = True
+                count += 1
+        self.enabled = count > 0
+        if self.rank == 0 and self.enabled:
+            print(f"MoE routing stats enabled for {count} layers")
+
+    def on_train_step_end(self, trainer) -> None:
+        if not self.enabled or trainer.step % self.log_every != 0:
+            return
+        from models_dit import collect_moe_routing_stats
+
+        stats = collect_moe_routing_stats(trainer.raw_module)
+        if not stats:
+            return
+        numeric_keys = [
+            "selected_token_fraction",
+            "multi_expert_token_fraction",
+            "router_entropy",
+            "router_max_prob_mean",
+        ]
+        summary = {}
+        for key in numeric_keys:
+            values = [float(layer[key]) for layer in stats.values() if key in layer]
+            if values:
+                summary[key] = sum(values) / len(values)
+        record = {
+            "step": int(trainer.step),
+            "rank_local": True,
+            "summary": summary,
+            "layers": stats,
+        }
+        if self.rank == 0 and self.run_dir is not None:
+            with open(self.run_dir / "moe_routing_stats.jsonl", "a") as handle:
+                handle.write(json.dumps(record, sort_keys=True) + "\n")
+        if self.rank != 0 or self.writer is None:
+            return
+        for key, value in summary.items():
+            self.writer.add_scalar(f"moe/{key}", value, trainer.step)
 
 
 class SampleLoggerCallback:

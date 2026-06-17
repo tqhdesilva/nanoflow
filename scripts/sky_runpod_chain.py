@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -276,7 +277,10 @@ def build_volume_apply_command(values: RuntimeValues) -> list[str]:
     ]
 
 
-def build_jobs_launch_command(values: RuntimeValues) -> list[str]:
+def build_jobs_launch_command(
+    values: RuntimeValues,
+    secret_path: Path | None = None,
+) -> list[str]:
     """Build the SkyPilot managed chain launch command without side effects."""
     command = [
         "sky",
@@ -285,8 +289,9 @@ def build_jobs_launch_command(values: RuntimeValues) -> list[str]:
         "-n",
         f"nf-imagenet256-dit-{values.chain_id}",
     ]
-    if values.gcp_credentials is not None:
-        command.extend(["--secret-file", str(_secret_file_path(values))])
+    command.append("--detach-run")
+    if values.gcp_credentials is not None and secret_path is not None:
+        command.extend(["--secret-file", str(secret_path)])
     command.extend(["-y", str(values.rendered_path)])
     return command
 
@@ -379,20 +384,25 @@ def _country_from_datacenter_id(datacenter_id: str) -> str:
 
 
 def write_secret_file(values: RuntimeValues) -> Path:
-    """Write a SkyPilot dotenv secret file next to the rendered chain YAML."""
+    """Write a SkyPilot dotenv secret file under the system temp directory."""
     if values.gcp_credentials is None:
         raise ValueError("gcp_credentials is required to write a secret file")
-    secret_path = _secret_file_path(values)
-    secret_path.parent.mkdir(parents=True, exist_ok=True)
+    secret_dir = _secret_file_path(values).parent
+    secret_dir.mkdir(parents=True, exist_ok=True)
+    fd, secret_name = tempfile.mkstemp(
+        prefix=f"{values.chain_id}.",
+        suffix=".secrets.env",
+        dir=secret_dir,
+    )
+    secret_path = Path(secret_name)
     encoded = base64.b64encode(values.gcp_credentials.read_bytes()).decode("ascii")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    with os.fdopen(os.open(secret_path, flags, 0o600), "w") as handle:
+    with os.fdopen(fd, "w") as handle:
         handle.write(f"GCP_SERVICE_ACCOUNT_JSON_B64={encoded}\n")
     return secret_path
 
 
 def _secret_file_path(values: RuntimeValues) -> Path:
-    return values.rendered_path.with_suffix(".secrets.env")
+    return Path(tempfile.gettempdir()) / "nanoflow-runpod-chain" / f"{values.chain_id}.secrets.env"
 
 
 def _remote_template_path(template_path: Path) -> str:
@@ -461,16 +471,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     values = resolve_runtime_values(args, dry_run=args.dry_run)
     render_chain_file(Path(args.template), values)
     volume_command = build_volume_apply_command(values)
-    launch_command = build_jobs_launch_command(values)
     print(f"Rendered chain: {values.rendered_path}")
     print(f"Volume command: {redacted_command(volume_command)}")
-    print(f"Launch command: {redacted_command(launch_command)}")
     if args.dry_run:
+        launch_command = build_jobs_launch_command(values)
+        print(f"Launch command: {redacted_command(launch_command)}")
+        if values.gcp_credentials is not None:
+            print("Secret file: created temporarily only during a real launch")
         return 0
     run_command(volume_command)
-    if values.gcp_credentials is not None:
-        write_secret_file(values)
-    run_command(launch_command)
+    secret_path = None
+    try:
+        if values.gcp_credentials is not None:
+            secret_path = write_secret_file(values)
+        launch_command = build_jobs_launch_command(values, secret_path=secret_path)
+        print(f"Launch command: {redacted_command(launch_command)}")
+        run_command(launch_command)
+    finally:
+        if secret_path is not None:
+            secret_path.unlink(missing_ok=True)
     return 0
 
 
