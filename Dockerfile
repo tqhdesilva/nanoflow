@@ -13,7 +13,7 @@ ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates curl libgomp1 \
+    && apt-get install -y --no-install-recommends bash build-essential ca-certificates curl libgomp1 \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip install --no-cache-dir --upgrade uv
 
