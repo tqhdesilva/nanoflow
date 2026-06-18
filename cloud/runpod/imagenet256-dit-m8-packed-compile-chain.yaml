@@ -92,6 +92,7 @@ run: |
     runs_dir=/workspace/runs \
     "training.run_dir=/workspace/runs/$CHAIN_ID/train" \
     training.resume=auto \
+    inference=null \
     train_loader.persistent_workers=true \
     val_loader.persistent_workers=true \
     train_loader.prefetch_factor=4 \

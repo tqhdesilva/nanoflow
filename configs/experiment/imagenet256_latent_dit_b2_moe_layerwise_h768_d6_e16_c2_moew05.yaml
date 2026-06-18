@@ -6,7 +6,7 @@ defaults:
 
 training:
   run_prefix: imagenet256_latent_dit_b2_moe_layerwise_h768_d6_e16_c2_moew05
-  batch_size: 2560
+  batch_size: 2048
   epochs: 400
   lr: 1.0e-4
   optimizer: adamw
