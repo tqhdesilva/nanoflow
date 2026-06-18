@@ -27,6 +27,11 @@ ema_decay: 0
 # Precision (fp32, fp16, bf16), autocast plus GradScaler for fp16 only.
 precision: null
 
+# Optional PT2 model compilation. compile_mode examples: default, reduce-overhead, max-autotune.
+compile_model: false
+compile_mode: null
+compile_backend: null
+
 # Loss mode enum: mse | masked_mse.
 loss_mode: mse
 # Model-only initialization controls.

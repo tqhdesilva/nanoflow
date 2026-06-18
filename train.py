@@ -79,6 +79,7 @@ class Trainer:
         self.flow = flow
 
         self.raw_module = model.to(device)
+        self.compiled_module = self._maybe_compile_model(self.raw_module, training)
 
         if training.p_uncond is not None and not hasattr(self.raw_module, "null_token"):
             raise ValueError(
@@ -86,13 +87,14 @@ class Trainer:
                 "Use a class-conditioned model (ClassCondMLP, ClassCondUNet)."
             )
 
+        train_module = self.compiled_module
         if distributed == "ddp":
             ddp_kwargs = {}
             if device.type == "cuda":
                 ddp_kwargs["device_ids"] = [device.index]
-            self.module: nn.Module = DDP(self.raw_module, **ddp_kwargs)
+            self.module: nn.Module = DDP(train_module, **ddp_kwargs)
         elif distributed is None:
-            self.module = self.raw_module
+            self.module = train_module
         else:
             raise ValueError(f"Unknown distributed strategy: {distributed!r}")
 
@@ -122,6 +124,19 @@ class Trainer:
         self.losses: list[float] = []
         self._reset_train_epoch_metrics()
         self._reset_val_epoch_metrics()
+
+    @staticmethod
+    def _maybe_compile_model(module: nn.Module, training) -> nn.Module:
+        if not bool(getattr(training, "compile_model", False)):
+            return module
+        kwargs = {}
+        compile_mode = getattr(training, "compile_mode", None)
+        compile_backend = getattr(training, "compile_backend", None)
+        if compile_mode is not None:
+            kwargs["mode"] = compile_mode
+        if compile_backend is not None:
+            kwargs["backend"] = compile_backend
+        return torch.compile(module, **kwargs)
 
     @staticmethod
     def _build_optimizer(parameters, training):

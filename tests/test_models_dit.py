@@ -12,6 +12,7 @@ from models_dit import (
     DiTBackbone,
     ExpertChoiceMoEFFN,
     DiTBlock,
+    PackedExpertChoiceMoEFFN,
     PatchMixer,
     RandomTokenMasker,
     RoPE2D,
@@ -103,7 +104,85 @@ def _make_deferred_model(
     return model
 
 
+def _copy_loop_moe_to_packed(loop_moe, packed_moe):
+    with torch.no_grad():
+        packed_moe.router.weight.copy_(loop_moe.router.weight)
+        for expert_idx, expert in enumerate(loop_moe.experts):
+            packed_moe.w1[expert_idx].copy_(expert.net[0].weight.T)
+            packed_moe.b1[expert_idx].copy_(expert.net[0].bias)
+            packed_moe.w2[expert_idx].copy_(expert.net[2].weight.T)
+            packed_moe.b2[expert_idx].copy_(expert.net[2].bias)
+
+
 class DiTModelTest(unittest.TestCase):
+    def _assert_packed_moe_matches_loop(self, device):
+        activation_factories = (lambda: None, torch.nn.SiLU)
+        for activation_factory in activation_factories:
+            torch.manual_seed(1234)
+            loop_moe = ExpertChoiceMoEFFN(
+                hidden_size=8,
+                mlp_width=16,
+                num_experts=4,
+                expert_capacity=2.0,
+                activation=activation_factory(),
+                collect_routing_stats=True,
+            ).to(device)
+            packed_moe = PackedExpertChoiceMoEFFN(
+                hidden_size=8,
+                mlp_width=16,
+                num_experts=4,
+                expert_capacity=2.0,
+                activation=activation_factory(),
+                collect_routing_stats=True,
+            ).to(device)
+            _copy_loop_moe_to_packed(loop_moe, packed_moe)
+
+            x = torch.randn(3, 9, 8, device=device)
+            x_loop = x.detach().clone().requires_grad_(True)
+            x_packed = x.detach().clone().requires_grad_(True)
+            y_loop = loop_moe(x_loop)
+            y_packed = packed_moe(x_packed)
+            torch.testing.assert_close(y_packed, y_loop, rtol=1e-4, atol=1e-5)
+            self.assertEqual(
+                loop_moe.get_routing_stats(), packed_moe.get_routing_stats()
+            )
+
+            grad_output = torch.randn_like(y_loop)
+            (y_loop * grad_output).sum().backward()
+            (y_packed * grad_output).sum().backward()
+            torch.testing.assert_close(x_packed.grad, x_loop.grad, rtol=1e-4, atol=1e-5)
+            torch.testing.assert_close(
+                packed_moe.router.weight.grad,
+                loop_moe.router.weight.grad,
+                rtol=1e-4,
+                atol=1e-5,
+            )
+            for expert_idx, expert in enumerate(loop_moe.experts):
+                torch.testing.assert_close(
+                    packed_moe.w1.grad[expert_idx],
+                    expert.net[0].weight.grad.T,
+                    rtol=1e-4,
+                    atol=1e-5,
+                )
+                torch.testing.assert_close(
+                    packed_moe.b1.grad[expert_idx],
+                    expert.net[0].bias.grad,
+                    rtol=1e-4,
+                    atol=1e-5,
+                )
+                torch.testing.assert_close(
+                    packed_moe.w2.grad[expert_idx],
+                    expert.net[2].weight.grad.T,
+                    rtol=1e-4,
+                    atol=1e-5,
+                )
+                torch.testing.assert_close(
+                    packed_moe.b2.grad[expert_idx],
+                    expert.net[2].bias.grad,
+                    rtol=1e-4,
+                    atol=1e-5,
+                )
+
     def test_patchify_imagenet_latent_shape(self):
         model = _make_model(hidden_size=32)
         x = torch.randn(2, 4, 32, 32)
@@ -474,77 +553,98 @@ class DiTModelTest(unittest.TestCase):
             DenseFFN(hidden_size=8, activation={"_target_": "torch.nn.SiLU"})
 
     def test_expert_choice_moe_preserves_shape_and_routes_common_lengths(self):
-        for num_tokens in (64, 256):
-            moe = ExpertChoiceMoEFFN(
-                hidden_size=16,
-                mlp_width=32,
-                num_experts=8,
-                expert_capacity=2.0,
-                collect_routing_stats=True,
-            )
-            x = torch.randn(3, num_tokens, 16, requires_grad=True)
-            y = moe(x)
+        for moe_cls in (ExpertChoiceMoEFFN, PackedExpertChoiceMoEFFN):
+            for num_tokens in (64, 256):
+                moe = moe_cls(
+                    hidden_size=16,
+                    mlp_width=32,
+                    num_experts=8,
+                    expert_capacity=2.0,
+                    collect_routing_stats=True,
+                )
+                x = torch.randn(3, num_tokens, 16, requires_grad=True)
+                y = moe(x)
 
-            self.assertEqual(y.shape, x.shape)
-            stats = collect_moe_routing_stats(moe)["root"]
-            self.assertEqual(stats["tokens_per_expert"], num_tokens // 4)
-            self.assertEqual(stats["active_assignments"], 3 * 8 * (num_tokens // 4))
-            self.assertGreater(stats["selected_token_fraction"], 0)
-            self.assertGreaterEqual(stats["multi_expert_token_fraction"], 0)
+                self.assertEqual(y.shape, x.shape)
+                stats = collect_moe_routing_stats(moe)["root"]
+                self.assertEqual(stats["tokens_per_expert"], num_tokens // 4)
+                self.assertEqual(stats["active_assignments"], 3 * 8 * (num_tokens // 4))
+                self.assertGreater(stats["selected_token_fraction"], 0)
+                self.assertGreaterEqual(stats["multi_expert_token_fraction"], 0)
 
-            loss = y.square().mean()
-            loss.backward()
-            grads = [p.grad for p in moe.parameters() if p.grad is not None]
-            self.assertGreater(len(grads), 0)
-            self.assertTrue(all(torch.isfinite(grad).all() for grad in grads))
+                loss = y.square().mean()
+                loss.backward()
+                grads = [p.grad for p in moe.parameters() if p.grad is not None]
+                self.assertGreater(len(grads), 0)
+                self.assertTrue(all(torch.isfinite(grad).all() for grad in grads))
+
+    def test_packed_expert_choice_moe_matches_loop_on_cpu(self):
+        self._assert_packed_moe_matches_loop(torch.device("cpu"))
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
+    def test_packed_expert_choice_moe_matches_loop_on_cuda(self):
+        self._assert_packed_moe_matches_loop(torch.device("cuda"))
 
     def test_expert_choice_moe_rejects_invalid_capacity(self):
+        for moe_cls in (ExpertChoiceMoEFFN, PackedExpertChoiceMoEFFN):
+            with self.assertRaises(ValueError):
+                moe_cls(hidden_size=8, expert_capacity=0.0)
+
+    def test_packed_expert_choice_moe_rejects_parameterized_activation(self):
         with self.assertRaises(ValueError):
-            ExpertChoiceMoEFFN(hidden_size=8, expert_capacity=0.0)
+            PackedExpertChoiceMoEFFN(
+                hidden_size=8,
+                mlp_width=16,
+                num_experts=4,
+                activation=torch.nn.PReLU(),
+            )
 
     def test_expert_choice_moe_keeps_at_least_one_token_per_expert(self):
-        moe = ExpertChoiceMoEFFN(
-            hidden_size=8,
-            mlp_width=16,
-            num_experts=8,
-            expert_capacity=0.5,
-            collect_routing_stats=True,
-        )
-        x = torch.randn(2, 1, 8)
-        y = moe(x)
-        self.assertEqual(y.shape, x.shape)
-        stats = collect_moe_routing_stats(moe)["root"]
-        self.assertEqual(stats["tokens_per_expert"], 1)
-        self.assertEqual(stats["active_assignments"], 16)
+        for moe_cls in (ExpertChoiceMoEFFN, PackedExpertChoiceMoEFFN):
+            moe = moe_cls(
+                hidden_size=8,
+                mlp_width=16,
+                num_experts=8,
+                expert_capacity=0.5,
+                collect_routing_stats=True,
+            )
+            x = torch.randn(2, 1, 8)
+            y = moe(x)
+            self.assertEqual(y.shape, x.shape)
+            stats = collect_moe_routing_stats(moe)["root"]
+            self.assertEqual(stats["tokens_per_expert"], 1)
+            self.assertEqual(stats["active_assignments"], 16)
 
     def test_expert_choice_moe_skips_routing_stats_by_default(self):
-        moe = ExpertChoiceMoEFFN(
-            hidden_size=8,
-            mlp_width=16,
-            num_experts=4,
-            expert_capacity=2.0,
-        )
-        y = moe(torch.randn(2, 8, 8))
-        self.assertEqual(y.shape, (2, 8, 8))
-        self.assertIsNone(moe.get_routing_stats())
-        self.assertEqual(collect_moe_routing_stats(moe), {})
-
-    def test_dit_block_accepts_expert_choice_moe_ffn(self):
-        block = DiTBlock(
-            hidden_size=16,
-            attention=SelfAttention(hidden_size=16, num_heads=4),
-            ffn=ExpertChoiceMoEFFN(
-                hidden_size=16,
-                mlp_width=32,
+        for moe_cls in (ExpertChoiceMoEFFN, PackedExpertChoiceMoEFFN):
+            moe = moe_cls(
+                hidden_size=8,
+                mlp_width=16,
                 num_experts=4,
                 expert_capacity=2.0,
-            ),
-        )
-        x = torch.randn(2, 8, 16)
-        cond = torch.randn(2, 16)
-        coords = build_2d_patch_coords(2, 4)
-        y = block(x, cond, coords, RoPE2D())
-        self.assertEqual(y.shape, x.shape)
+            )
+            y = moe(torch.randn(2, 8, 8))
+            self.assertEqual(y.shape, (2, 8, 8))
+            self.assertIsNone(moe.get_routing_stats())
+            self.assertEqual(collect_moe_routing_stats(moe), {})
+
+    def test_dit_block_accepts_expert_choice_moe_ffn(self):
+        for moe_cls in (ExpertChoiceMoEFFN, PackedExpertChoiceMoEFFN):
+            block = DiTBlock(
+                hidden_size=16,
+                attention=SelfAttention(hidden_size=16, num_heads=4),
+                ffn=moe_cls(
+                    hidden_size=16,
+                    mlp_width=32,
+                    num_experts=4,
+                    expert_capacity=2.0,
+                ),
+            )
+            x = torch.randn(2, 8, 16)
+            cond = torch.randn(2, 16)
+            coords = build_2d_patch_coords(2, 4)
+            y = block(x, cond, coords, RoPE2D())
+            self.assertEqual(y.shape, x.shape)
 
     def test_patch_mixer_and_backbone_support_mixed_ffn_blocks(self):
         def dense_block():
@@ -580,36 +680,38 @@ class DiTModelTest(unittest.TestCase):
         self.assertIsInstance(backbone.blocks[1].ffn, ExpertChoiceMoEFFN)
 
     def test_moe_forward_keeps_scatter_dtype_under_autocast(self):
-        moe = ExpertChoiceMoEFFN(
-            hidden_size=8,
-            mlp_width=16,
-            num_experts=4,
-            expert_capacity=2.0,
-        )
-        x = torch.randn(2, 8, 8)
+        for moe_cls in (ExpertChoiceMoEFFN, PackedExpertChoiceMoEFFN):
+            moe = moe_cls(
+                hidden_size=8,
+                mlp_width=16,
+                num_experts=4,
+                expert_capacity=2.0,
+            )
+            x = torch.randn(2, 8, 8)
 
-        with torch.amp.autocast(device_type="cpu", dtype=torch.bfloat16):
-            y = moe(x)
+            with torch.amp.autocast(device_type="cpu", dtype=torch.bfloat16):
+                y = moe(x)
 
-        self.assertEqual(y.dtype, x.dtype)
-        self.assertEqual(y.shape, x.shape)
+            self.assertEqual(y.dtype, x.dtype)
+            self.assertEqual(y.shape, x.shape)
 
     def test_collect_moe_routing_stats_names_layers(self):
-        moe = ExpertChoiceMoEFFN(
-            hidden_size=8,
-            mlp_width=16,
-            num_experts=4,
-            expert_capacity=2.0,
-            collect_routing_stats=True,
-        )
-        model = torch.nn.Sequential(moe)
-        _ = model(torch.randn(2, 8, 8))
-        layer_stats = moe.get_routing_stats()
-        self.assertIsNotNone(layer_stats)
-        self.assertEqual(layer_stats["active_assignments"], 2 * 4 * 4)
-        stats = collect_moe_routing_stats(model)
-        self.assertIn("0", stats)
-        self.assertEqual(stats["0"], layer_stats)
+        for moe_cls in (ExpertChoiceMoEFFN, PackedExpertChoiceMoEFFN):
+            moe = moe_cls(
+                hidden_size=8,
+                mlp_width=16,
+                num_experts=4,
+                expert_capacity=2.0,
+                collect_routing_stats=True,
+            )
+            model = torch.nn.Sequential(moe)
+            _ = model(torch.randn(2, 8, 8))
+            layer_stats = moe.get_routing_stats()
+            self.assertIsNotNone(layer_stats)
+            self.assertEqual(layer_stats["active_assignments"], 2 * 4 * 4)
+            stats = collect_moe_routing_stats(model)
+            self.assertIn("0", stats)
+            self.assertEqual(stats["0"], layer_stats)
 
     def test_hydra_dit_smoke_config_materializes(self):
         from hydra import compose, initialize_config_dir

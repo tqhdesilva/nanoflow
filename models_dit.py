@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -426,6 +427,200 @@ class ExpertChoiceMoEFFN(nn.Module):
         }
 
 
+class PackedExpertChoiceMoEFFN(nn.Module):
+    """Expert-choice FFN with sparse routing and packed expert weights.
+
+    This matches `ExpertChoiceMoEFFN` routing semantics, but stores expert linear
+    layers as packed tensors and evaluates all expert slots with batched einsums.
+    The activation must be stateless and elementwise, such as GELU or SiLU,
+    because it is shared across experts instead of cloned once per expert.
+    """
+
+    def __init__(
+        self,
+        hidden_size: int,
+        mlp_width: Optional[int] = None,
+        num_experts: int = 8,
+        expert_capacity: float = 2.0,
+        activation: Optional[nn.Module] = None,
+        collect_routing_stats: bool = False,
+    ):
+        super().__init__()
+        if hidden_size <= 0:
+            raise ValueError(f"hidden_size must be positive, got {hidden_size}")
+        if num_experts <= 0:
+            raise ValueError(f"num_experts must be positive, got {num_experts}")
+        if expert_capacity <= 0:
+            raise ValueError(f"expert_capacity must be positive, got {expert_capacity}")
+        self.hidden_size = int(hidden_size)
+        self.mlp_width = 4 * self.hidden_size if mlp_width is None else int(mlp_width)
+        if self.mlp_width <= 0:
+            raise ValueError(f"mlp_width must be positive, got {self.mlp_width}")
+        self.num_experts = int(num_experts)
+        self.expert_capacity = float(expert_capacity)
+        self.collect_routing_stats = bool(collect_routing_stats)
+        self.router = nn.Linear(self.hidden_size, self.num_experts, bias=False)
+        self.w1 = nn.Parameter(
+            torch.empty(self.num_experts, self.hidden_size, self.mlp_width)
+        )
+        self.b1 = nn.Parameter(torch.empty(self.num_experts, self.mlp_width))
+        self.w2 = nn.Parameter(
+            torch.empty(self.num_experts, self.mlp_width, self.hidden_size)
+        )
+        self.b2 = nn.Parameter(torch.empty(self.num_experts, self.hidden_size))
+        self.activation = _build_activation(activation)
+        _validate_packed_activation(self.activation)
+        self._last_routing_stats: dict[str, torch.Tensor | float | int] | None = None
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        """Initialize packed weights with the same distribution as nn.Linear."""
+        self.router.reset_parameters()
+        for expert_idx in range(self.num_experts):
+            nn.init.kaiming_uniform_(self.w1[expert_idx].T, a=math.sqrt(5))
+            nn.init.kaiming_uniform_(self.w2[expert_idx].T, a=math.sqrt(5))
+        nn.init.uniform_(
+            self.b1,
+            -1.0 / math.sqrt(self.hidden_size),
+            1.0 / math.sqrt(self.hidden_size),
+        )
+        nn.init.uniform_(
+            self.b2,
+            -1.0 / math.sqrt(self.mlp_width),
+            1.0 / math.sqrt(self.mlp_width),
+        )
+
+    def _tokens_per_expert(self, num_tokens: int) -> int:
+        if num_tokens <= 0:
+            raise ValueError(f"num_tokens must be positive, got {num_tokens}")
+        raw_count = int(self.expert_capacity * num_tokens / self.num_experts)
+        return min(num_tokens, max(1, raw_count))
+
+    def _update_routing_stats(
+        self,
+        routing_probs: torch.Tensor,
+        selected_indices: torch.Tensor,
+        tokens_per_expert: int,
+    ) -> None:
+        """Cache diagnostics from router probabilities and selected token indices."""
+        with torch.no_grad():
+            bsz, num_tokens, _ = routing_probs.shape
+            flat_indices = selected_indices.reshape(bsz, -1)
+            assignment_counts = torch.zeros(
+                bsz,
+                num_tokens,
+                device=routing_probs.device,
+                dtype=torch.float32,
+            )
+            assignment_counts.scatter_add_(
+                1,
+                flat_indices,
+                torch.ones_like(flat_indices, dtype=torch.float32),
+            )
+            probs = routing_probs.detach().float()
+            entropy = -(probs * probs.clamp_min(1e-20).log()).sum(dim=-1).mean()
+            router_max = probs.max(dim=-1).values.mean()
+            active_assignments = int(flat_indices.numel())
+            expert_counts = torch.full(
+                (self.num_experts,),
+                bsz * tokens_per_expert,
+                device=routing_probs.device,
+                dtype=torch.int64,
+            )
+            self._last_routing_stats = {
+                "batch_size": int(bsz),
+                "num_tokens": int(num_tokens),
+                "num_experts": int(self.num_experts),
+                "tokens_per_expert": int(tokens_per_expert),
+                "selected_token_fraction": (assignment_counts > 0)
+                .float()
+                .mean()
+                .detach(),
+                "multi_expert_token_fraction": (assignment_counts > 1)
+                .float()
+                .mean()
+                .detach(),
+                "router_entropy": entropy.detach(),
+                "router_max_prob_mean": router_max.detach(),
+                "zero_token_expert_count": (expert_counts == 0).sum().detach(),
+                "active_assignments": active_assignments,
+            }
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() != 3:
+            raise ValueError(f"Expected x shape [B, T, D], got {tuple(x.shape)}")
+        if x.size(-1) != self.hidden_size:
+            raise ValueError(
+                f"Expected hidden size {self.hidden_size}, got {x.size(-1)}"
+            )
+        bsz, num_tokens, _ = x.shape
+        tokens_per_expert = self._tokens_per_expert(num_tokens)
+
+        # routing_probs: [B, T, E], then top-k per expert gives [B, E, K].
+        routing_probs = F.softmax(self.router(x).float(), dim=-1)
+        weights, indices = torch.topk(
+            routing_probs.transpose(1, 2),
+            k=tokens_per_expert,
+            dim=2,
+        )
+
+        # Gather selected tokens as [B, E*K, D], then restore expert slots to
+        # [B, E, K, D] so packed weights can compute all experts together.
+        flat_indices = indices.reshape(bsz, -1)
+        gather_index = flat_indices.unsqueeze(-1).expand(-1, -1, self.hidden_size)
+        x_sel = torch.gather(x, dim=1, index=gather_index)
+        x_sel = x_sel.reshape(
+            bsz,
+            self.num_experts,
+            tokens_per_expert,
+            self.hidden_size,
+        )
+
+        # Packed FFN: [B, E, K, D] -> [B, E, K, M] -> [B, E, K, D].
+        hidden = torch.einsum("bekd,edm->bekm", x_sel, self.w1)
+        hidden = hidden + self.b1[None, :, None, :]
+        hidden = self.activation(hidden)
+        expert_output = torch.einsum("bekm,emd->bekd", hidden, self.w2)
+        expert_output = expert_output + self.b2[None, :, None, :]
+        weighted_output = expert_output * weights.to(expert_output.dtype).unsqueeze(-1)
+
+        # Flatten expert slots back to [B, E*K, D] and scatter-add duplicate
+        # token assignments into the original [B, T, D] layout.
+        output = torch.zeros_like(x)
+        output.scatter_add_(
+            1,
+            gather_index,
+            weighted_output.reshape(bsz, -1, self.hidden_size).to(output.dtype),
+        )
+        if self.collect_routing_stats:
+            self._update_routing_stats(routing_probs, indices, tokens_per_expert)
+        else:
+            self._last_routing_stats = None
+        return output
+
+    def get_routing_stats(self) -> dict[str, float | int] | None:
+        """Return latest routing diagnostics, or None before collection."""
+        if self._last_routing_stats is None:
+            return None
+        return {
+            key: _routing_stat_value(value)
+            for key, value in self._last_routing_stats.items()
+        }
+
+
+def _validate_packed_activation(activation: nn.Module) -> None:
+    if any(param.requires_grad for param in activation.parameters(recurse=True)):
+        raise ValueError(
+            "PackedExpertChoiceMoEFFN activation must be stateless and shared "
+            "across experts; parameterized activations are not supported"
+        )
+    if any(True for _ in activation.buffers(recurse=True)):
+        raise ValueError(
+            "PackedExpertChoiceMoEFFN activation must be stateless and shared "
+            "across experts; buffered activations are not supported"
+        )
+
+
 def _routing_stat_value(value: torch.Tensor | float | int) -> float | int:
     if not torch.is_tensor(value):
         return value
@@ -441,13 +636,14 @@ def collect_moe_routing_stats(
     """Return latest MoE routing stats keyed by `named_modules()` path.
 
     This is a convenience for trainer callbacks and diagnostics. Per-layer API
-    users should call `ExpertChoiceMoEFFN.get_routing_stats()`. Only modules
-    that have run with `collect_routing_stats=True` are included. If `module` is
-    itself an MoE FFN, its key is `"root"`.
+    users should call `get_routing_stats()`. Only modules that have run with
+    `collect_routing_stats=True` are included. If `module` is itself an MoE FFN,
+    its key is `"root"`.
     """
     stats = {}
+    moe_types = (ExpertChoiceMoEFFN, PackedExpertChoiceMoEFFN)
     for name, child in module.named_modules():
-        if isinstance(child, ExpertChoiceMoEFFN):
+        if isinstance(child, moe_types):
             layer_stats = child.get_routing_stats()
             if layer_stats is not None:
                 stats[name or "root"] = layer_stats

@@ -269,6 +269,9 @@ class TrainingConfig:
     ema_decay: float = 0
     num_workers: int = 0
     precision: Optional[str] = None
+    compile_model: bool = False
+    compile_mode: Optional[str] = None
+    compile_backend: Optional[str] = None
     p_uncond: Optional[float] = None
     loss_mode: LossMode = LossMode.mse
     init_from: Optional[str] = None

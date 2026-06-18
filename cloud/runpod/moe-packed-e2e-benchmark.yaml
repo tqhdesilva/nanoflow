@@ -1,0 +1,83 @@
+name: nf-moe-packed-e2e-${CHAIN_ID}
+execution: serial
+
+---
+name: benchmark
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  accelerators: ${GPU_REQUEST}
+  disk_size: 100
+  image_id: ${IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+file_mounts:
+  /tmp/nanoflow-rendered-chain.yaml: ${RENDERED_CHAIN_PATH}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  DATASET_CLOUD_URI: ${DATASET_CLOUD_URI}
+  DATASET_GCS_URI: ${DATASET_CLOUD_URI}
+  DATASET_CACHE_ROOT: /workspace/latent-caches/imagenet256/current
+  LATENT_CACHE_LINK: /workspace/latent-caches/imagenet256/current
+  ARTIFACT_CLOUD_URI: ${ARTIFACT_CLOUD_URI}
+  HF_HOME: /workspace/.cache/huggingface
+  TORCH_HOME: /workspace/.cache/torch
+  TMPDIR: /tmp
+  HYDRA_FULL_ERROR: "1"
+  INSTALL_GCLOUD: "1"
+  LOAD_ENV_FILE: "0"
+  SKIP_SYNC_IF_PRESENT: "1"
+  E2E_EXPERIMENT: imagenet256_latent_dit_b2_moe_layerwise
+  E2E_BATCH_SIZE: "256"
+  E2E_WARMUP_STEPS: "5"
+  E2E_STEPS: "20"
+  E2E_NUM_WORKERS: "8"
+  E2E_OVERRIDES: "training.compile_model=true training.compile_mode=reduce-overhead"
+run: |
+  set -euo pipefail
+  out="/workspace/runs/$CHAIN_ID/moe-packed-e2e"
+  mkdir -p "$out" "$HF_HOME" "$TORCH_HOME" "$TMPDIR"
+  cp /tmp/nanoflow-rendered-chain.yaml "$out/chain.yaml"
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi | tee "$out/nvidia-smi.txt"
+  fi
+  python scripts/runpod_cuda_smoke.py 2>&1 | tee "$out/cuda_smoke.log"
+  if ! command -v cc >/dev/null 2>&1; then
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential
+  fi
+  bash scripts/runpod_hydrate_imagenet_latents.sh 2>&1 | tee "$out/hydrate.log"
+  python scripts/preflight_imagenet_latent_mmap.py \
+    --cache-root "$DATASET_CACHE_ROOT" \
+    --batch-size 8 \
+    --num-workers 2 \
+    2>&1 | tee "$out/preflight.log"
+
+  status=0
+  extra_args=()
+  if [ -n "${E2E_OVERRIDES:-}" ]; then
+    read -r -a extra_args <<< "$E2E_OVERRIDES"
+  fi
+  python scripts/benchmark_moe_packed_e2e.py \
+    --experiment "${E2E_EXPERIMENT:-imagenet256_latent_dit_b2_moe_layerwise}" \
+    --device cuda \
+    --dataset-cache-root "$DATASET_CACHE_ROOT" \
+    --batch-size "${E2E_BATCH_SIZE:-256}" \
+    --num-workers "${E2E_NUM_WORKERS:-8}" \
+    --persistent-workers \
+    --warmup-steps "${E2E_WARMUP_STEPS:-5}" \
+    --steps "${E2E_STEPS:-20}" \
+    --precision bf16 \
+    --output "$out/e2e_benchmark.json" \
+    --markdown-output "$out/e2e_benchmark.md" \
+    "${extra_args[@]}" \
+    2>&1 | tee "$out/e2e_benchmark.log" || status=${PIPESTATUS[0]}
+
+  echo "$status" > "$out/exit_status.txt"
+  if [ -n "${ARTIFACT_CLOUD_URI:-}" ]; then
+    bash scripts/runpod_gcs_rsync.sh \
+      "/workspace/runs/$CHAIN_ID" \
+      "$ARTIFACT_CLOUD_URI/$CHAIN_ID" \
+      2>&1 | tee "$out/artifact_sync.log" || true
+  fi
+  exit "$status"

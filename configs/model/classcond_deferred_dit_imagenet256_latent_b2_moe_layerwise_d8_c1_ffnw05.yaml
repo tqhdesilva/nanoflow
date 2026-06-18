@@ -173,4 +173,4 @@ class_dim: 512
 pos_embedding:
   _target_: models_dit.RoPE2D
   base: 10000.0
-use_gradient_checkpointing: true
+use_gradient_checkpointing: false

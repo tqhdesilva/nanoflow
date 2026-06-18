@@ -1,0 +1,73 @@
+name: nf-moe-packed-benchmark-${CHAIN_ID}
+execution: serial
+
+---
+name: benchmark
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  accelerators: ${GPU_REQUEST}
+  disk_size: 100
+  image_id: ${IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+file_mounts:
+  /tmp/nanoflow-rendered-chain.yaml: ${RENDERED_CHAIN_PATH}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  ARTIFACT_CLOUD_URI: ${ARTIFACT_CLOUD_URI}
+  HF_HOME: /workspace/.cache/huggingface
+  TORCH_HOME: /workspace/.cache/torch
+  TORCHINDUCTOR_CACHE_DIR: /workspace/.cache/torchinductor
+  TMPDIR: /tmp
+  HYDRA_FULL_ERROR: "1"
+  MOE_BENCH_WARMUPS: "5"
+  MOE_BENCH_ITERS: "20"
+  MOE_BENCH_DTYPE: bfloat16
+  MOE_BENCH_SHAPES: ""
+  INSTALL_GCLOUD: "1"
+run: |
+  set -euo pipefail
+  out="/workspace/runs/$CHAIN_ID/moe-packed-benchmark"
+  mkdir -p "$out" "$HF_HOME" "$TORCH_HOME" "$TORCHINDUCTOR_CACHE_DIR" "$TMPDIR"
+  cp /tmp/nanoflow-rendered-chain.yaml "$out/chain.yaml"
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi | tee "$out/nvidia-smi.txt"
+  fi
+  python scripts/runpod_cuda_smoke.py 2>&1 | tee "$out/cuda_smoke.log"
+  if ! command -v cc >/dev/null 2>&1; then
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential
+  fi
+
+  status=0
+  python -m unittest \
+    tests.test_models_dit.DiTModelTest.test_packed_expert_choice_moe_matches_loop_on_cpu \
+    tests.test_models_dit.DiTModelTest.test_packed_expert_choice_moe_matches_loop_on_cuda \
+    2>&1 | tee "$out/equivalence_tests.log" || status=${PIPESTATUS[0]}
+
+  if [ "$status" -eq 0 ]; then
+    shape_args=()
+    if [ -n "${MOE_BENCH_SHAPES:-}" ]; then
+      shape_args=(--shape-filter "$MOE_BENCH_SHAPES")
+    fi
+    python scripts/benchmark_moe_packed.py \
+      --device cuda \
+      --dtype "${MOE_BENCH_DTYPE:-bfloat16}" \
+      --warmups "${MOE_BENCH_WARMUPS:-5}" \
+      --iters "${MOE_BENCH_ITERS:-20}" \
+      --compile \
+      --output "$out/benchmark.json" \
+      --markdown-output "$out/benchmark.md" \
+      "${shape_args[@]}" \
+      2>&1 | tee "$out/benchmark.log" || status=${PIPESTATUS[0]}
+  fi
+
+  echo "$status" > "$out/exit_status.txt"
+  if [ -n "${ARTIFACT_CLOUD_URI:-}" ]; then
+    bash scripts/runpod_gcs_rsync.sh \
+      "/workspace/runs/$CHAIN_ID" \
+      "$ARTIFACT_CLOUD_URI/$CHAIN_ID" \
+      2>&1 | tee "$out/artifact_sync.log" || true
+  fi
+  exit "$status"
