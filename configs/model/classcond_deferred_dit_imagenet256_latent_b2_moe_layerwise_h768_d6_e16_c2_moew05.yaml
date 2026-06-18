@@ -32,7 +32,7 @@ patch_mixer:
       hidden_size: ${..hidden_size}
       num_heads: 8
     ffn:
-      _target_: models_dit.ExpertChoiceMoEFFN
+      _target_: models_dit.PackedExpertChoiceMoEFFN
       hidden_size: ${..hidden_size}
       mlp_width: 1024
       num_experts: 16
@@ -70,7 +70,7 @@ backbone:
       num_heads: 12
       attention_width: 432
     ffn:
-      _target_: models_dit.ExpertChoiceMoEFFN
+      _target_: models_dit.PackedExpertChoiceMoEFFN
       hidden_size: ${..hidden_size}
       mlp_width: 336
       num_experts: 16
@@ -100,7 +100,7 @@ backbone:
       num_heads: 12
       attention_width: 528
     ffn:
-      _target_: models_dit.ExpertChoiceMoEFFN
+      _target_: models_dit.PackedExpertChoiceMoEFFN
       hidden_size: ${..hidden_size}
       mlp_width: 576
       num_experts: 16
@@ -130,7 +130,7 @@ backbone:
       num_heads: 12
       attention_width: 576
     ffn:
-      _target_: models_dit.ExpertChoiceMoEFFN
+      _target_: models_dit.PackedExpertChoiceMoEFFN
       hidden_size: ${..hidden_size}
       mlp_width: 816
       num_experts: 16
