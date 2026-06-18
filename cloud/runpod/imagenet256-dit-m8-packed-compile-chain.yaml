@@ -1,0 +1,157 @@
+name: nf-imagenet256-dit-m8-packed-compile-${CHAIN_ID}
+execution: serial
+
+---
+name: sync_inputs
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  cpus: 1+
+  memory: 4+
+  disk_size: 5
+  image_id: ${SYNC_IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+file_mounts:
+  /tmp/nanoflow-rendered-chain.yaml: ${RENDERED_CHAIN_PATH}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  RUNPOD_INFRA: ${RUNPOD_INFRA}
+  GPU_REQUEST: ${GPU_REQUEST}
+  VOLUME_NAME: ${VOLUME_NAME}
+  VOLUME_SIZE: ${VOLUME_SIZE}
+  IMAGE_ID: ${IMAGE_ID}
+  SYNC_IMAGE_ID: ${SYNC_IMAGE_ID}
+  DATASET_CLOUD_URI: ${DATASET_CLOUD_URI}
+  DATASET_GCS_URI: ${DATASET_CLOUD_URI}
+  DATASET_CACHE_ROOT: /workspace/latent-caches/imagenet256/current
+  LATENT_CACHE_LINK: /workspace/latent-caches/imagenet256/current
+  ARTIFACT_CLOUD_URI: ${ARTIFACT_CLOUD_URI}
+  INSTALL_GCLOUD: "1"
+  LOAD_ENV_FILE: "0"
+  SKIP_SYNC_IF_PRESENT: "1"
+run: |
+  set -euo pipefail
+  mkdir -p "/workspace/runs/$CHAIN_ID"
+  cp /tmp/nanoflow-rendered-chain.yaml "/workspace/runs/$CHAIN_ID/chain.yaml"
+  bash scripts/runpod_hydrate_imagenet_latents.sh
+  python scripts/preflight_imagenet_latent_mmap.py \
+    --cache-root /workspace/latent-caches/imagenet256/current \
+    --batch-size 8 \
+    --num-workers 2
+
+---
+name: train
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  accelerators: ${GPU_REQUEST}
+  disk_size: 100
+  image_id: ${IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+file_mounts:
+  /tmp/nanoflow-rendered-chain.yaml: ${RENDERED_CHAIN_PATH}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  DATASET_CACHE_ROOT: /workspace/latent-caches/imagenet256/current
+  LATENT_CACHE_LINK: /workspace/latent-caches/imagenet256/current
+  RUNS_DIR: /workspace/runs
+  HF_HOME: /workspace/.cache/huggingface
+  TORCH_HOME: /workspace/.cache/torch
+  TMPDIR: /workspace/.tmp
+  HYDRA_FULL_ERROR: "1"
+run: |
+  set -euo pipefail
+  mkdir -p "$HF_HOME" "$TORCH_HOME" "$TMPDIR" "$RUNS_DIR" "/workspace/runs/$CHAIN_ID/train"
+  cp /tmp/nanoflow-rendered-chain.yaml "/workspace/runs/$CHAIN_ID/train/chain.yaml"
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi | tee "/workspace/runs/$CHAIN_ID/train/nvidia-smi.txt"
+  fi
+  python scripts/runpod_cuda_smoke.py 2>&1 | tee "/workspace/runs/$CHAIN_ID/train/cuda_smoke.log"
+  if ! command -v cc >/dev/null 2>&1; then
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential
+  fi
+  cat > "/workspace/runs/$CHAIN_ID/train/cost_context.md" <<'EOF'
+  # Cost context
+
+  Intended run uses `experiment=imagenet256_latent_dit_b2_moe_layerwise_h768_d6_e16_c2_moew05`.
+  The checked-in experiment owns batch size, epochs, LR, packed MoE, and PT2 compile settings.
+
+  Empirical baseline: 400 epoch latent U-Net RunPod run cost about $50-$60.
+  FLOP proxy: H768 D6 E16 c2 moew0.5 train FLOPs/image is about 18.04G vs baseline 16.4G, about 1.10x.
+  Runtime optimizations: PT2 compile and packed MoE are enabled, so expected cost should be benchmarked from first-epoch throughput rather than stale pre-optimization estimates.
+
+  Cost formula: cost = epochs * N_train / samples_per_sec / 3600 * GPU_hour_price * num_gpus.
+  EOF
+  python train.py \
+    experiment=imagenet256_latent_dit_b2_moe_layerwise_h768_d6_e16_c2_moew05 \
+    device=cuda \
+    dataset.cache_root=/workspace/latent-caches/imagenet256/current \
+    runs_dir=/workspace/runs \
+    "training.run_dir=/workspace/runs/$CHAIN_ID/train" \
+    training.resume=auto \
+    train_loader.persistent_workers=true \
+    val_loader.persistent_workers=true \
+    train_loader.prefetch_factor=4 \
+    val_loader.prefetch_factor=4 \
+    2>&1 | tee "/workspace/runs/$CHAIN_ID/train/train_console.log"
+
+---
+name: eval_generate
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  accelerators: ${GPU_REQUEST}
+  disk_size: 100
+  image_id: ${IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  HF_HOME: /workspace/.cache/huggingface
+  TORCH_HOME: /workspace/.cache/torch
+  TMPDIR: /workspace/.tmp
+  HYDRA_FULL_ERROR: "1"
+run: |
+  set -euo pipefail
+  mkdir -p "$HF_HOME" "$TORCH_HOME" "$TMPDIR" "/workspace/runs/$CHAIN_ID/eval_generate"
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi | tee "/workspace/runs/$CHAIN_ID/eval_generate/nvidia-smi.txt"
+  fi
+  python scripts/runpod_cuda_smoke.py 2>&1 | tee "/workspace/runs/$CHAIN_ID/eval_generate/cuda_smoke.log"
+  python eval_imagenet.py \
+    experiment=imagenet256_latent_dit_b2_moe_layerwise_h768_d6_e16_c2_moew05 \
+    device=cuda \
+    "eval.checkpoint=/workspace/runs/$CHAIN_ID/train/checkpoints/latest.pt" \
+    "eval.output_dir=/workspace/runs/$CHAIN_ID/eval_generate" \
+    eval.generate=true \
+    eval.compute_fid=false \
+    eval.make_stats=false \
+    eval.generation.num_samples=64 \
+    eval.generation.batch_size=16 \
+    eval.generation.num_steps=200 \
+    eval.generation.guidance_scale=3.0 \
+    2>&1 | tee "/workspace/runs/$CHAIN_ID/eval_generate/eval_console.log"
+
+---
+name: sync_artifacts
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  cpus: 1+
+  memory: 4+
+  disk_size: 5
+  image_id: ${SYNC_IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  ARTIFACT_CLOUD_URI: ${ARTIFACT_CLOUD_URI}
+  INSTALL_GCLOUD: "1"
+run: |
+  set -euo pipefail
+  bash scripts/runpod_gcs_rsync.sh \
+    "/workspace/runs/$CHAIN_ID" \
+    "$ARTIFACT_CLOUD_URI/$CHAIN_ID"
