@@ -14,7 +14,7 @@ training:
   eval_every: 10
   num_workers: 8
   precision: bf16
-  ema_decay: 0.9999
+  ema_decay: 0.0
   p_uncond: 0.1
 
 sample_logger:
