@@ -13,7 +13,7 @@ training:
   lr: 1.0e-4
   optimizer: adamw
   weight_decay: 0.01
-  warmup_epochs: 2
+  warmup_epochs: 1
   checkpoint_every: 10
   eval_every: 5
   num_workers: 8
