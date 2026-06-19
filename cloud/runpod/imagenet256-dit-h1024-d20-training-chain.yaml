@@ -1,0 +1,284 @@
+name: nf-imagenet256-dit-h1024-d20-train-${CHAIN_ID}
+execution: serial
+
+---
+name: sync_inputs
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  cpus: 1+
+  memory: 4+
+  disk_size: 5
+  image_id: ${SYNC_IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+file_mounts:
+  /tmp/nanoflow-rendered-chain.yaml: ${RENDERED_CHAIN_PATH}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  RUNPOD_INFRA: ${RUNPOD_INFRA}
+  GPU_REQUEST: ${GPU_REQUEST}
+  VOLUME_NAME: ${VOLUME_NAME}
+  VOLUME_SIZE: ${VOLUME_SIZE}
+  IMAGE_ID: ${IMAGE_ID}
+  SYNC_IMAGE_ID: ${SYNC_IMAGE_ID}
+  DATASET_CLOUD_URI: ${DATASET_CLOUD_URI}
+  DATASET_GCS_URI: ${DATASET_CLOUD_URI}
+  DATASET_CACHE_ROOT: /workspace/latent-caches/imagenet256/current
+  LATENT_CACHE_LINK: /workspace/latent-caches/imagenet256/current
+  ARTIFACT_CLOUD_URI: ${ARTIFACT_CLOUD_URI}
+  INSTALL_GCLOUD: "1"
+  LOAD_ENV_FILE: "0"
+  SKIP_SYNC_IF_PRESENT: "1"
+run: |
+  set -euo pipefail
+  mkdir -p "/workspace/runs/$CHAIN_ID"
+  cp /tmp/nanoflow-rendered-chain.yaml "/workspace/runs/$CHAIN_ID/chain.yaml"
+  bash scripts/runpod_hydrate_imagenet_latents.sh
+  python scripts/preflight_imagenet_latent_mmap.py \
+    --cache-root /workspace/latent-caches/imagenet256/current \
+    --batch-size 8 \
+    --num-workers 2
+
+---
+name: masked_smoke
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  accelerators: ${GPU_REQUEST}
+  disk_size: 100
+  image_id: ${IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+file_mounts:
+  /tmp/nanoflow-rendered-chain.yaml: ${RENDERED_CHAIN_PATH}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  DATASET_CACHE_ROOT: /workspace/latent-caches/imagenet256/current
+  LATENT_CACHE_LINK: /workspace/latent-caches/imagenet256/current
+  RUNS_DIR: /workspace/runs
+  HF_HOME: /workspace/.cache/huggingface
+  TORCH_HOME: /workspace/.cache/torch
+  TMPDIR: /workspace/.tmp
+  HYDRA_FULL_ERROR: "1"
+run: |
+  set -euo pipefail
+  mkdir -p "$HF_HOME" "$TORCH_HOME" "$TMPDIR" "$RUNS_DIR" "/workspace/runs/$CHAIN_ID/masked_smoke"
+  cp /tmp/nanoflow-rendered-chain.yaml "/workspace/runs/$CHAIN_ID/masked_smoke/chain.yaml"
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi | tee "/workspace/runs/$CHAIN_ID/masked_smoke/nvidia-smi.txt"
+  fi
+  python scripts/runpod_cuda_smoke.py 2>&1 | tee "/workspace/runs/$CHAIN_ID/masked_smoke/cuda_smoke.log"
+  if ! command -v cc >/dev/null 2>&1; then
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential
+  fi
+  python train.py \
+    experiment=imagenet256_latent_dit_m2_moe_layerwise_h1024_d20_e16_c2_moew05_masked80 \
+    device=cuda \
+    dataset.cache_root=/workspace/latent-caches/imagenet256/current \
+    runs_dir=/workspace/runs \
+    "training.run_dir=/workspace/runs/$CHAIN_ID/masked_smoke" \
+    training.resume=null \
+    training.max_steps=2 \
+    training.eval_every=0 \
+    training.checkpoint_every=0 \
+    training.log_moe_stats=true \
+    train_loader.persistent_workers=true \
+    val_loader.persistent_workers=true \
+    train_loader.prefetch_factor=4 \
+    val_loader.prefetch_factor=4 \
+    inference=null \
+    sample_logger=null \
+    2>&1 | tee "/workspace/runs/$CHAIN_ID/masked_smoke/train_console.log"
+
+---
+name: masked_pretrain
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  accelerators: ${GPU_REQUEST}
+  disk_size: 100
+  image_id: ${IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+file_mounts:
+  /tmp/nanoflow-rendered-chain.yaml: ${RENDERED_CHAIN_PATH}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  DATASET_CACHE_ROOT: /workspace/latent-caches/imagenet256/current
+  LATENT_CACHE_LINK: /workspace/latent-caches/imagenet256/current
+  RUNS_DIR: /workspace/runs
+  HF_HOME: /workspace/.cache/huggingface
+  TORCH_HOME: /workspace/.cache/torch
+  TMPDIR: /workspace/.tmp
+  HYDRA_FULL_ERROR: "1"
+run: |
+  set -euo pipefail
+  mkdir -p "$HF_HOME" "$TORCH_HOME" "$TMPDIR" "$RUNS_DIR" "/workspace/runs/$CHAIN_ID/masked_pretrain"
+  cp /tmp/nanoflow-rendered-chain.yaml "/workspace/runs/$CHAIN_ID/masked_pretrain/chain.yaml"
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi | tee "/workspace/runs/$CHAIN_ID/masked_pretrain/nvidia-smi.txt"
+  fi
+  python train.py \
+    experiment=imagenet256_latent_dit_m2_moe_layerwise_h1024_d20_e16_c2_moew05_masked80 \
+    device=cuda \
+    dataset.cache_root=/workspace/latent-caches/imagenet256/current \
+    runs_dir=/workspace/runs \
+    "training.run_dir=/workspace/runs/$CHAIN_ID/masked_pretrain" \
+    training.resume=auto \
+    train_loader.persistent_workers=true \
+    val_loader.persistent_workers=true \
+    train_loader.prefetch_factor=4 \
+    val_loader.prefetch_factor=4 \
+    inference=null \
+    2>&1 | tee "/workspace/runs/$CHAIN_ID/masked_pretrain/train_console.log"
+
+---
+name: unmasked_smoke
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  accelerators: ${GPU_REQUEST}
+  disk_size: 100
+  image_id: ${IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+file_mounts:
+  /tmp/nanoflow-rendered-chain.yaml: ${RENDERED_CHAIN_PATH}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  DATASET_CACHE_ROOT: /workspace/latent-caches/imagenet256/current
+  LATENT_CACHE_LINK: /workspace/latent-caches/imagenet256/current
+  RUNS_DIR: /workspace/runs
+  HF_HOME: /workspace/.cache/huggingface
+  TORCH_HOME: /workspace/.cache/torch
+  TMPDIR: /workspace/.tmp
+  HYDRA_FULL_ERROR: "1"
+run: |
+  set -euo pipefail
+  mkdir -p "$HF_HOME" "$TORCH_HOME" "$TMPDIR" "$RUNS_DIR" "/workspace/runs/$CHAIN_ID/unmasked_smoke"
+  cp /tmp/nanoflow-rendered-chain.yaml "/workspace/runs/$CHAIN_ID/unmasked_smoke/chain.yaml"
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi | tee "/workspace/runs/$CHAIN_ID/unmasked_smoke/nvidia-smi.txt"
+  fi
+  python train.py \
+    experiment=imagenet256_latent_dit_m2_moe_layerwise_h1024_d20_e16_c2_moew05_unmasked20 \
+    device=cuda \
+    dataset.cache_root=/workspace/latent-caches/imagenet256/current \
+    runs_dir=/workspace/runs \
+    "training.run_dir=/workspace/runs/$CHAIN_ID/unmasked_smoke" \
+    training.resume=null \
+    "training.init_from=/workspace/runs/$CHAIN_ID/masked_pretrain/checkpoints/latest.pt" \
+    training.max_steps=2 \
+    training.eval_every=0 \
+    training.checkpoint_every=0 \
+    training.log_moe_stats=true \
+    train_loader.persistent_workers=true \
+    val_loader.persistent_workers=true \
+    train_loader.prefetch_factor=4 \
+    val_loader.prefetch_factor=4 \
+    inference=null \
+    sample_logger=null \
+    2>&1 | tee "/workspace/runs/$CHAIN_ID/unmasked_smoke/train_console.log"
+
+---
+name: unmasked_finetune
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  accelerators: ${GPU_REQUEST}
+  disk_size: 100
+  image_id: ${IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+file_mounts:
+  /tmp/nanoflow-rendered-chain.yaml: ${RENDERED_CHAIN_PATH}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  DATASET_CACHE_ROOT: /workspace/latent-caches/imagenet256/current
+  LATENT_CACHE_LINK: /workspace/latent-caches/imagenet256/current
+  RUNS_DIR: /workspace/runs
+  HF_HOME: /workspace/.cache/huggingface
+  TORCH_HOME: /workspace/.cache/torch
+  TMPDIR: /workspace/.tmp
+  HYDRA_FULL_ERROR: "1"
+run: |
+  set -euo pipefail
+  mkdir -p "$HF_HOME" "$TORCH_HOME" "$TMPDIR" "$RUNS_DIR" "/workspace/runs/$CHAIN_ID/unmasked_finetune"
+  cp /tmp/nanoflow-rendered-chain.yaml "/workspace/runs/$CHAIN_ID/unmasked_finetune/chain.yaml"
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi | tee "/workspace/runs/$CHAIN_ID/unmasked_finetune/nvidia-smi.txt"
+  fi
+  python train.py \
+    experiment=imagenet256_latent_dit_m2_moe_layerwise_h1024_d20_e16_c2_moew05_unmasked20 \
+    device=cuda \
+    dataset.cache_root=/workspace/latent-caches/imagenet256/current \
+    runs_dir=/workspace/runs \
+    "training.run_dir=/workspace/runs/$CHAIN_ID/unmasked_finetune" \
+    training.resume=auto \
+    "training.init_from=/workspace/runs/$CHAIN_ID/masked_pretrain/checkpoints/latest.pt" \
+    train_loader.persistent_workers=true \
+    val_loader.persistent_workers=true \
+    train_loader.prefetch_factor=4 \
+    val_loader.prefetch_factor=4 \
+    inference=null \
+    2>&1 | tee "/workspace/runs/$CHAIN_ID/unmasked_finetune/train_console.log"
+
+---
+name: eval_generate
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  accelerators: ${GPU_REQUEST}
+  disk_size: 100
+  image_id: ${IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  HF_HOME: /workspace/.cache/huggingface
+  TORCH_HOME: /workspace/.cache/torch
+  TMPDIR: /workspace/.tmp
+  HYDRA_FULL_ERROR: "1"
+run: |
+  set -euo pipefail
+  mkdir -p "$HF_HOME" "$TORCH_HOME" "$TMPDIR" "/workspace/runs/$CHAIN_ID/eval_generate"
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi | tee "/workspace/runs/$CHAIN_ID/eval_generate/nvidia-smi.txt"
+  fi
+  python scripts/runpod_cuda_smoke.py 2>&1 | tee "/workspace/runs/$CHAIN_ID/eval_generate/cuda_smoke.log"
+  python eval_imagenet.py \
+    experiment=imagenet256_latent_dit_m2_moe_layerwise_h1024_d20_e16_c2_moew05_unmasked20 \
+    device=cuda \
+    "eval.checkpoint=/workspace/runs/$CHAIN_ID/unmasked_finetune/checkpoints/latest.pt" \
+    "eval.output_dir=/workspace/runs/$CHAIN_ID/eval_generate" \
+    eval.generate=true \
+    eval.compute_fid=false \
+    eval.make_stats=false \
+    eval.generation.num_samples=64 \
+    eval.generation.batch_size=16 \
+    eval.generation.num_steps=200 \
+    eval.generation.guidance_scale=3.0 \
+    2>&1 | tee "/workspace/runs/$CHAIN_ID/eval_generate/eval_console.log"
+
+---
+name: sync_artifacts
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  cpus: 1+
+  memory: 4+
+  disk_size: 5
+  image_id: ${SYNC_IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  ARTIFACT_CLOUD_URI: ${ARTIFACT_CLOUD_URI}
+  INSTALL_GCLOUD: "1"
+run: |
+  set -euo pipefail
+  bash scripts/runpod_gcs_rsync.sh \
+    "/workspace/runs/$CHAIN_ID" \
+    "$ARTIFACT_CLOUD_URI/$CHAIN_ID"

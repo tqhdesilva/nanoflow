@@ -28,6 +28,7 @@ from models_dit import (
     DenseFFN,
     DiTBlock,
     ExpertChoiceMoEFFN,
+    PackedExpertChoiceMoEFFN,
 )
 
 
@@ -151,12 +152,32 @@ def estimate_active_params(model: torch.nn.Module) -> float:
             active_moe = router + token_multiplier * expert_params
             total_moe = router + all_experts
             active += active_moe - total_moe
+        elif isinstance(module, PackedExpertChoiceMoEFFN):
+            expert_params = packed_expert_param_count(module)
+            all_experts = module.num_experts * expert_params
+            router = sum(param.numel() for param in module.router.parameters())
+            token_multiplier = active_expert_multiplier(module, num_tokens=64)
+            active_moe = router + token_multiplier * expert_params
+            total_moe = router + all_experts
+            active += active_moe - total_moe
     return active
 
 
-def active_expert_multiplier(module: ExpertChoiceMoEFFN, num_tokens: int) -> float:
+def active_expert_multiplier(
+    module: ExpertChoiceMoEFFN | PackedExpertChoiceMoEFFN,
+    num_tokens: int,
+) -> float:
     k = module._tokens_per_expert(num_tokens)
     return module.num_experts * k / num_tokens
+
+
+def packed_expert_param_count(module: PackedExpertChoiceMoEFFN) -> int:
+    return (
+        module.hidden_size * module.mlp_width
+        + module.mlp_width
+        + module.mlp_width * module.hidden_size
+        + module.hidden_size
+    )
 
 
 def linear_macs(module: torch.nn.Module, count: int = 1) -> int:
@@ -183,7 +204,7 @@ def block_macs(block: DiTBlock, num_tokens: int) -> int:
     ffn = block.ffn
     if isinstance(ffn, DenseFFN):
         macs += 2 * num_tokens * h * ffn.mlp_width
-    elif isinstance(ffn, ExpertChoiceMoEFFN):
+    elif isinstance(ffn, (ExpertChoiceMoEFFN, PackedExpertChoiceMoEFFN)):
         k = ffn._tokens_per_expert(num_tokens)
         macs += num_tokens * h * ffn.num_experts
         macs += ffn.num_experts * k * (2 * h * ffn.mlp_width)

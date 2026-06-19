@@ -7,6 +7,10 @@ lr: 1.0e-3
 optimizer: adam
 weight_decay: 0.0
 warmup_epochs: 0
+# Optional cosine horizon. null means use training.epochs.
+lr_schedule_epochs: null
+# Final cosine LR factor relative to training.lr.
+lr_min_factor: 0.0
 # Epoch-based cadences. Set to 0 to disable periodic checkpointing or eval.
 checkpoint_every: 10
 eval_every: 10

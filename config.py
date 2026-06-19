@@ -255,6 +255,8 @@ class TrainingConfig:
     optimizer: OptimizerType = OptimizerType.adam
     weight_decay: float = 0.0
     warmup_epochs: int = 0
+    lr_schedule_epochs: Optional[int] = None
+    lr_min_factor: float = 0.0
     # Epoch-based cadences. Set to 0 to disable periodic checkpointing or eval.
     checkpoint_every: int = 10
     eval_every: int = 10

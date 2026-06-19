@@ -664,6 +664,38 @@ class TrainingControlsTest(unittest.TestCase):
         self.assertLess(recorder.values[0], recorder.values[-1])
         self.assertLess(recorder.values[-1], training.lr)
 
+    def test_scheduler_uses_schedule_epochs_and_min_factor(self):
+        data = TensorDataset(torch.randn(4, 2))
+        loader = DataLoader(data, batch_size=2, shuffle=False)
+        training = TrainingConfig(
+            epochs=4,
+            batch_size=2,
+            lr=1e-3,
+            warmup_epochs=1,
+            lr_schedule_epochs=2,
+            lr_min_factor=0.05,
+            eval_every=0,
+            checkpoint_every=0,
+        )
+        trainer = Trainer(
+            model=MLP(hidden_dim=8, num_layers=1, time_dim=8),
+            flow=CondOT(),
+            training=training,
+            device=torch.device("cpu"),
+        )
+        scheduler = trainer._build_scheduler(trainer.optimizer, training, len(loader))
+        self.assertIsNotNone(scheduler)
+
+        for _ in range(4):
+            trainer.optimizer.step()
+            scheduler.step()
+
+        self.assertAlmostEqual(
+            trainer.optimizer.param_groups[0]["lr"],
+            training.lr * training.lr_min_factor,
+            places=8,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

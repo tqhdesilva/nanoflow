@@ -162,10 +162,18 @@ class Trainer:
         warmup_epochs = getattr(training, "warmup_epochs", 0)
         if warmup_epochs <= 0:
             return None
-        total_steps = training.epochs * steps_per_epoch
+        schedule_epochs = getattr(training, "lr_schedule_epochs", None)
+        if schedule_epochs is None:
+            schedule_epochs = training.epochs
+        if schedule_epochs <= 0:
+            raise ValueError("training.lr_schedule_epochs must be positive or null")
+        total_steps = schedule_epochs * steps_per_epoch
         if total_steps <= 0:
             return None
         warmup_steps = min(warmup_epochs * steps_per_epoch, total_steps)
+        min_factor = float(getattr(training, "lr_min_factor", 0.0))
+        if min_factor < 0.0 or min_factor > 1.0:
+            raise ValueError("training.lr_min_factor must be in [0, 1]")
         start_factor = 1e-3
 
         def lr_lambda(step: int) -> float:
@@ -174,7 +182,8 @@ class Trainer:
                 return start_factor + (1.0 - start_factor) * progress
             progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
             progress = min(max(progress, 0.0), 1.0)
-            return 0.5 * (1.0 + math.cos(math.pi * progress))
+            cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+            return min_factor + (1.0 - min_factor) * cosine
 
         return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 
