@@ -1,0 +1,98 @@
+name: nf-imagenet256-dit-h1024-d20-heun-eval-${CHAIN_ID}
+execution: serial
+
+---
+name: sync_inputs
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  cpus: 1+
+  memory: 4+
+  disk_size: 5
+  image_id: ${SYNC_IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+file_mounts:
+  /tmp/nanoflow-rendered-chain.yaml: ${RENDERED_CHAIN_PATH}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  SOURCE_CHAIN_ID: h1024d20-train-b320-usca2-20260619-080537
+  ARTIFACT_CLOUD_URI: ${ARTIFACT_CLOUD_URI}
+  INSTALL_GCLOUD: "1"
+  LOAD_ENV_FILE: "0"
+run: |
+  set -euo pipefail
+  source_dir="$ARTIFACT_CLOUD_URI/$SOURCE_CHAIN_ID/unmasked_finetune/checkpoints"
+  dest_dir="/workspace/runs/$SOURCE_CHAIN_ID/unmasked_finetune/checkpoints"
+  mkdir -p "/workspace/runs/$CHAIN_ID" "$dest_dir"
+  cp /tmp/nanoflow-rendered-chain.yaml "/workspace/runs/$CHAIN_ID/chain.yaml"
+  bash scripts/runpod_gcs_rsync.sh "$source_dir" "$dest_dir"
+  test -f "$dest_dir/latest.pt"
+
+---
+name: eval_generate
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  accelerators: ${GPU_REQUEST}
+  disk_size: 100
+  image_id: ${IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  SOURCE_CHAIN_ID: h1024d20-train-b320-usca2-20260619-080537
+  HF_HOME: /workspace/.cache/huggingface
+  TORCH_HOME: /workspace/.cache/torch
+  TMPDIR: /workspace/.tmp
+  HYDRA_FULL_ERROR: "1"
+run: |
+  set -euo pipefail
+  mkdir -p "$HF_HOME" "$TORCH_HOME" "$TMPDIR" "/workspace/runs/$CHAIN_ID"
+  checkpoint="/workspace/runs/$SOURCE_CHAIN_ID/unmasked_finetune/checkpoints/latest.pt"
+  test -f "$checkpoint"
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi | tee "/workspace/runs/$CHAIN_ID/nvidia-smi.txt"
+  fi
+  CFG_SCALES=(2.0 3.0 4.0 5.0)
+  for scale in "${CFG_SCALES[@]}"; do
+    scale_tag="${scale/./p}"
+    output_dir="/workspace/runs/$CHAIN_ID/eval_heun1000_cfg${scale_tag}"
+    mkdir -p "$output_dir"
+    python eval_imagenet.py \
+      experiment=imagenet256_latent_dit_m2_moe_layerwise_h1024_d20_e16_c2_moew05_unmasked20 \
+      device=cuda \
+      "eval.checkpoint=$checkpoint" \
+      "eval.output_dir=$output_dir" \
+      eval.generate=true \
+      eval.compute_fid=false \
+      eval.make_stats=false \
+      eval.generation.num_samples=64 \
+      eval.generation.batch_size=16 \
+      eval.generation.num_steps=1000 \
+      eval.generation.guidance_scale="$scale" \
+      eval.generation.solver=heun \
+      "eval.generation.grid_path=$output_dir/grid.png" \
+      2>&1 | tee "$output_dir/eval_console.log"
+  done
+
+---
+name: sync_artifacts
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  cpus: 1+
+  memory: 4+
+  disk_size: 5
+  image_id: ${SYNC_IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  ARTIFACT_CLOUD_URI: ${ARTIFACT_CLOUD_URI}
+  INSTALL_GCLOUD: "1"
+run: |
+  set -euo pipefail
+  bash scripts/runpod_gcs_rsync.sh \
+    "/workspace/runs/$CHAIN_ID" \
+    "$ARTIFACT_CLOUD_URI/$CHAIN_ID"

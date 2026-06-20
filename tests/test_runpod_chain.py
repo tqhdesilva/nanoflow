@@ -291,6 +291,55 @@ class RunPodChainTest(unittest.TestCase):
         )
         self.assertNotIn("python scripts/sky_runpod_chain.py", joined)
 
+    def test_h1024_heun_eval_chain_renders_cfg_sweep(self):
+        template = Path("cloud/runpod/imagenet256-dit-h1024-d20-heun-eval.yaml")
+        text = template.read_text()
+        values = {
+            "CHAIN_ID": "chain-a",
+            "RUNPOD_INFRA": "runpod/US/US-CA-2",
+            "GPU_REQUEST": "H100-SXM:1",
+            "VOLUME_NAME": "nf-test",
+            "IMAGE_ID": "docker:image:tag",
+            "SYNC_IMAGE_ID": "docker:image:tag",
+            "DATASET_CLOUD_URI": "gs://nanoflow/data",
+            "ARTIFACT_CLOUD_URI": "gs://nanoflow/runs",
+            "CHAIN_TEMPLATE_PATH": "cloud/runpod/imagenet256-dit-h1024-d20-heun-eval.yaml",
+            "RENDERED_CHAIN_PATH": ".nanoflow_runpod_chains/chain-a.yaml",
+            "VOLUME_SIZE": "100Gi",
+        }
+        rendered = render_template_text(text, values)
+        docs = list(yaml.safe_load_all(rendered))
+
+        self.assertEqual(
+            docs[0],
+            {
+                "name": "nf-imagenet256-dit-h1024-d20-heun-eval-chain-a",
+                "execution": "serial",
+            },
+        )
+        self.assertEqual(
+            [doc["name"] for doc in docs[1:]],
+            ["sync_inputs", "eval_generate", "sync_artifacts"],
+        )
+        joined = "\n".join(doc["run"] for doc in docs[1:])
+        self.assertEqual(
+            docs[1]["envs"]["SOURCE_CHAIN_ID"],
+            "h1024d20-train-b320-usca2-20260619-080537",
+        )
+        self.assertEqual(
+            docs[2]["envs"]["SOURCE_CHAIN_ID"],
+            "h1024d20-train-b320-usca2-20260619-080537",
+        )
+        self.assertIn("unmasked_finetune/checkpoints", joined)
+        self.assertIn("eval.generation.solver=heun", joined)
+        self.assertIn("eval.generation.num_steps=1000", joined)
+        self.assertIn("eval.generation.guidance_scale=\"$scale\"", joined)
+        self.assertIn("eval.generation.grid_path=$output_dir/grid.png", joined)
+        self.assertIn("CFG_SCALES=(2.0 3.0 4.0 5.0)", joined)
+        self.assertNotIn("masked_pretrain", [doc["name"] for doc in docs[1:]])
+        self.assertNotIn("unmasked_finetune", [doc["name"] for doc in docs[1:]])
+        self.assertIn("runpod_gcs_rsync.sh", joined)
+
     def test_m7_profile_chain_renders_profile_sweep(self):
         template = Path("cloud/runpod/imagenet256-dit-m7-profile-chain.yaml")
         text = template.read_text()
