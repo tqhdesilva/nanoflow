@@ -6,7 +6,7 @@ defaults:
 
 training:
   run_prefix: imagenet256_latent_dit_m2_moe_layerwise_h1024_d20_e16_c2_moew05_masked80
-  batch_size: 384
+  batch_size: 320
   epochs: 80
   lr_schedule_epochs: 80
   lr_min_factor: 0.05

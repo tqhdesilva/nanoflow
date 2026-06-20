@@ -9,7 +9,7 @@ model:
 
 training:
   run_prefix: imagenet256_latent_dit_m2_moe_layerwise_h1024_d20_e16_c2_moew05_unmasked20
-  batch_size: 96
+  batch_size: 80
   epochs: 20
   lr_schedule_epochs: 20
   lr_min_factor: 0.05
