@@ -6,7 +6,7 @@ import hashlib
 import json
 import shutil
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -20,6 +20,8 @@ from omegaconf import DictConfig, OmegaConf
 from PIL import Image
 
 import config as _config  # noqa: F401, registers structured config schema
+from inference import FlowSampler
+from ode_solvers import EulerSolver, LatentODESolver
 
 
 @dataclass(frozen=True)
@@ -43,7 +45,7 @@ class GenerationConfig:
         batch_size: Max number of missing samples generated per model batch.
         num_steps: Number of endpoint-excluded ODE steps.
         guidance_scale: Classifier-free guidance scale.
-        solver: ODE solver name, either `euler` or `heun`.
+        solver: ODE solver used for latent integration.
         grid_path: Optional output path for a PNG image grid.
         grid_nrow: Number of images per grid row when `grid_path` is set.
         latent_shape: Latent noise shape, without the batch dimension.
@@ -61,7 +63,7 @@ class GenerationConfig:
     batch_size: int = 16
     num_steps: int = 200
     guidance_scale: float = 2.0
-    solver: str = "euler"
+    solver: LatentODESolver = field(default_factory=EulerSolver)
     grid_path: Optional[Path] = None
     grid_nrow: int = 8
     latent_shape: tuple[int, ...] = (4, 32, 32)
@@ -86,27 +88,6 @@ def build_uniform_labels(num_samples: int, num_classes: int = 1000) -> torch.Ten
     _require_positive_int("num_samples", num_samples)
     _require_positive_int("num_classes", num_classes)
     return torch.arange(num_samples, dtype=torch.long) % int(num_classes)
-
-
-def endpoint_excluded_euler_grid(
-    num_steps: int,
-    *,
-    device: torch.device,
-    dtype: torch.dtype = torch.float32,
-) -> torch.Tensor:
-    """Return Euler times `i / num_steps` for `i = 0..num_steps - 1`.
-
-    Args:
-        num_steps: Number of integration steps.
-        device: Device for the returned tensor.
-        dtype: Floating dtype for the returned tensor.
-
-    Returns:
-        A one-dimensional tensor that never includes `t = 1`.
-    """
-    _require_positive_int("num_steps", num_steps)
-    steps = torch.arange(num_steps, device=device, dtype=dtype)
-    return steps / float(num_steps)
 
 
 def load_checkpoint_weights(
@@ -161,7 +142,7 @@ def generate_latents(
     guidance_scale: float,
     seed: int,
     device: torch.device,
-    solver: str = "euler",
+    solver: Optional[LatentODESolver] = None,
 ) -> torch.Tensor:
     """Generate a latent batch using endpoint-excluded ODE integration.
 
@@ -174,7 +155,7 @@ def generate_latents(
         guidance_scale: Classifier-free guidance scale.
         seed: Base random seed.
         device: Device used for model evaluation.
-        solver: ODE solver name, either `euler` or `heun`.
+        solver: ODE solver used for latent integration.
 
     Returns:
         Generated latent tensor with shape `[len(indices), *latent_shape]`.
@@ -182,35 +163,24 @@ def generate_latents(
     if len(indices) == 0:
         raise ValueError("indices must not be empty")
     _require_positive_int("num_steps", num_steps)
-    solver = _normalize_solver(solver)
+    solver = solver or EulerSolver()
     if seed < 0:
         raise ValueError("seed must be nonnegative")
     model.eval()
     labels = labels.to(device=device, dtype=torch.long)
-    xt = _noise_for_indices(indices, latent_shape, seed).to(device=device)
-    dt = 1.0 / float(num_steps)
-    for t_val in endpoint_excluded_euler_grid(
-        num_steps,
-        device=device,
-        dtype=xt.dtype,
-    ):
-        t_batch = t_val.expand(xt.size(0))
-        vt = _guided_velocity(model, xt, t_batch, labels, guidance_scale)
-        if solver == "euler":
-            xt = xt + vt * dt
-            continue
-        x_predict = xt + vt * dt
-        next_t = torch.minimum(t_val + dt, torch.ones_like(t_val))
-        next_t_batch = next_t.expand(xt.size(0))
-        vt_next = _guided_velocity(
-            model,
-            x_predict,
-            next_t_batch,
-            labels,
-            guidance_scale,
-        )
-        xt = xt + 0.5 * (vt + vt_next) * dt
-    return xt
+    noise = _noise_for_indices(indices, latent_shape, seed).to(device=device)
+    sampler = FlowSampler(
+        model,
+        num_steps=num_steps,
+        latent_shape=list(latent_shape),
+        device=str(device),
+        solver=solver,
+    )
+    return sampler.generate_impl(
+        noise,
+        labels=labels,
+        guidance_scale=guidance_scale,
+    )
 
 
 def generate_imagenet_samples(
@@ -670,7 +640,7 @@ def _build_generation_metadata(
         "checkpoint": asdict(checkpoint_info) if checkpoint_info is not None else None,
         "git": {"commit": _git_commit()},
         "sampler": {
-            "type": f"ode_{cfg.solver}",
+            "type": f"ode_{_solver_name(cfg.solver)}",
             "time_grid": "endpoint_excluded",
             "num_steps": int(cfg.num_steps),
             "dt": 1.0 / float(cfg.num_steps),
@@ -715,7 +685,7 @@ def _generation_critical_config(
         "num_samples": int(cfg.num_samples),
         "num_steps": int(cfg.num_steps),
         "guidance_scale": float(cfg.guidance_scale),
-        "solver": str(cfg.solver),
+        "solver": _solver_name(cfg.solver),
         "grid_nrow": int(cfg.grid_nrow),
         "latent_shape": list(cfg.latent_shape),
         "seed": int(cfg.seed),
@@ -724,7 +694,7 @@ def _generation_critical_config(
         "model_config": _jsonable(model_config),
         "vae_config": _jsonable(vae_config),
         "vae_id": getattr(vae, "model_id", type(vae).__name__),
-        "sampler": f"endpoint_excluded_{cfg.solver}",
+        "sampler": f"endpoint_excluded_{_solver_name(cfg.solver)}",
         "image_format": "png_uint8_rgb",
     }
 
@@ -797,7 +767,6 @@ def _validate_generation_config(cfg: GenerationConfig) -> None:
         raise ValueError("seed must be nonnegative")
     if cfg.weights not in {"auto", "ema", "raw"}:
         raise ValueError("weights must be one of: auto, ema, raw")
-    _normalize_solver(cfg.solver)
     _require_positive_int("grid_nrow", cfg.grid_nrow)
     if not cfg.latent_shape:
         raise ValueError("latent_shape must not be empty")
@@ -812,12 +781,8 @@ def _require_positive_int(name: str, value: int) -> None:
         raise ValueError(f"{name} must be positive, got {value}")
 
 
-def _normalize_solver(solver: str) -> str:
-    if not isinstance(solver, str):
-        raise TypeError(f"solver must be a string, got {type(solver).__name__}")
-    if solver not in {"euler", "heun"}:
-        raise ValueError("solver must be one of: euler, heun")
-    return solver
+def _solver_name(solver: LatentODESolver) -> str:
+    return getattr(solver, "name", type(solver).__name__)
 
 
 def _module_device(module: torch.nn.Module) -> torch.device:
@@ -899,11 +864,6 @@ def _cfg_get(cfg: Any, key: str, default: Any = None) -> Any:
     return OmegaConf.select(cfg, key, default=default)
 
 
-def _cfg_value(cfg: Any, key: str, default: Any = None) -> Any:
-    value = _cfg_get(cfg, key, default)
-    return value.value if hasattr(value, "value") else value
-
-
 def _generation_config_from_hydra(eval_cfg: Any) -> GenerationConfig:
     """Convert the structured Hydra eval node to `GenerationConfig`."""
     output_dir = _cfg_get(eval_cfg, "output_dir")
@@ -916,7 +876,7 @@ def _generation_config_from_hydra(eval_cfg: Any) -> GenerationConfig:
         batch_size=int(_cfg_get(eval_cfg, "generation.batch_size", 16)),
         num_steps=int(_cfg_get(eval_cfg, "generation.num_steps", 200)),
         guidance_scale=float(_cfg_get(eval_cfg, "generation.guidance_scale", 2.0)),
-        solver=str(_cfg_value(eval_cfg, "generation.solver", "euler")),
+        solver=hydra.utils.instantiate(_cfg_get(eval_cfg, "generation.solver")),
         grid_path=(
             None
             if _cfg_get(eval_cfg, "generation.grid_path") is None

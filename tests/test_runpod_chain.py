@@ -331,7 +331,7 @@ class RunPodChainTest(unittest.TestCase):
             "h1024d20-train-b320-usca2-20260619-080537",
         )
         self.assertIn("unmasked_finetune/checkpoints", joined)
-        self.assertIn("eval.generation.solver=heun", joined)
+        self.assertIn("solver@eval.generation.solver=heun", joined)
         self.assertIn("eval.generation.num_steps=1000", joined)
         self.assertIn("eval.generation.guidance_scale=\"$scale\"", joined)
         self.assertIn("eval.generation.grid_path=$output_dir/grid.png", joined)

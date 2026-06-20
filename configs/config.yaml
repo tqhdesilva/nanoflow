@@ -5,6 +5,7 @@ defaults:
   - optional vae: null
   - optional vae_transform: null
   - training: default
+  - solver@inference.sampler.solver: euler
   - _self_
   - experiment: moons
   - metrics: none

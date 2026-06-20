@@ -20,6 +20,7 @@ from typing import Optional
 import torch
 import torch.distributed as dist
 import yaml
+from ode_solvers import EulerSolver
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import make_grid
@@ -469,6 +470,7 @@ class SampleLoggerCallback:
         guidance_scale: float = 1.0,
         p_uncond: Optional[float] = None,
         vae_cfg=None,
+        solver=None,
     ):
         self.rank = _rank()
         self.writer = writer
@@ -479,6 +481,7 @@ class SampleLoggerCallback:
         self.guidance_scale = guidance_scale
         self.p_uncond = p_uncond
         self.vae_cfg = vae_cfg
+        self.solver = solver or EulerSolver()
         self.vae = None
 
     def on_train_epoch_end(self, trainer) -> None:
@@ -488,7 +491,7 @@ class SampleLoggerCallback:
         if self.every <= 0 or epoch % self.every != 0:
             return
 
-        from inference import euler_sample, guided_euler_sample
+        from inference import FlowSampler
 
         sample_model = trainer.eval_model
         was_training = sample_model.training
@@ -497,6 +500,13 @@ class SampleLoggerCallback:
             noise = torch.randn(
                 self.n_samples, *self.latent_shape, device=trainer.device
             )
+            sampler = FlowSampler(
+                sample_model,
+                num_steps=self.num_steps,
+                latent_shape=list(self.latent_shape),
+                device=str(trainer.device),
+                solver=self.solver,
+            )
             if self.p_uncond is not None and hasattr(sample_model, "num_classes"):
                 labels = torch.randint(
                     0,
@@ -504,11 +514,13 @@ class SampleLoggerCallback:
                     (self.n_samples,),
                     device=trainer.device,
                 )
-                samples = guided_euler_sample(
-                    sample_model, noise, self.num_steps, labels, self.guidance_scale
+                samples = sampler.generate_impl(
+                    noise,
+                    labels=labels,
+                    guidance_scale=self.guidance_scale,
                 )
             else:
-                samples = euler_sample(sample_model, noise, self.num_steps)
+                samples = sampler.generate_impl(noise)
         if was_training:
             sample_model.train()
         if self.vae_cfg is not None:

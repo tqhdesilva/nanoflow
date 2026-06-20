@@ -71,7 +71,7 @@ run: |
       eval.generation.batch_size=16 \
       eval.generation.num_steps=1000 \
       eval.generation.guidance_scale="$scale" \
-      eval.generation.solver=heun \
+      solver@eval.generation.solver=heun \
       "eval.generation.grid_path=$output_dir/grid.png" \
       2>&1 | tee "$output_dir/eval_console.log"
   done

@@ -283,12 +283,17 @@ class TrainingConfig:
 # Sampling / inference
 
 
+def _default_euler_solver_config() -> dict[str, str]:
+    return {"_target_": "ode_solvers.EulerSolver"}
+
+
 @dataclass
 class SampleLoggerConfig:
     num_steps: int = 100
     latent_shape: Optional[list[int]] = None
     n_samples: int = 64
     guidance_scale: float = 1.0
+    solver: Any = field(default_factory=_default_euler_solver_config)
     # TODO should we also add optional class sampler?
 
 
@@ -328,6 +333,7 @@ class InferenceUnitConfig:
     num_steps: int = 100
     latent_shape: Optional[list[int]] = None
     device: str = "cpu"
+    solver: Any = field(default_factory=_default_euler_solver_config)
 
 
 @dataclass
@@ -350,11 +356,6 @@ class InferenceConfig:
     metrics: Optional[list] = None
 
 
-class ODESolver(str, Enum):
-    euler = "euler"
-    heun = "heun"
-
-
 @dataclass
 class ImageNetEvalGenerationConfig:
     """Batched PNG sample generation settings for ImageNet eval."""
@@ -363,7 +364,7 @@ class ImageNetEvalGenerationConfig:
     batch_size: int = 16
     num_steps: int = 200
     guidance_scale: float = 2.0
-    solver: ODESolver = ODESolver.euler
+    solver: Any = field(default_factory=_default_euler_solver_config)
     grid_path: Optional[str] = None
     grid_nrow: int = 8
     latent_shape: list[int] = field(default_factory=lambda: [4, 32, 32])

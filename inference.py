@@ -1,4 +1,4 @@
-"""Standalone inference: load a checkpoint, run Euler integration, save plots/metrics.
+"""Standalone inference: load a checkpoint, run ODE integration, save plots/metrics.
 
 Also re-used by `train.py` for post-train sampling. See `run_inference`.
 """
@@ -15,32 +15,7 @@ from torch import Tensor
 
 import config as _config  # noqa: F401, registers structured config schema
 from callbacks import make_run_dir
-
-
-@torch.no_grad()
-def euler_sample(model, noise, num_steps):
-    """Generate samples via Euler integration of the learned velocity field."""
-    xt = noise
-    dt = 1.0 / num_steps
-    for t_val in torch.linspace(0, 1, num_steps, device=noise.device):
-        vt = model(xt, t_val.expand(xt.size(0)))
-        xt = xt + vt * dt
-    return xt
-
-
-@torch.no_grad()
-def guided_euler_sample(model, noise, num_steps, cond, guidance_scale):
-    """Euler sampling with classifier-free guidance."""
-    null_cond = torch.full_like(cond, model.null_token)
-    xt = noise
-    dt = 1.0 / num_steps
-    for t_val in torch.linspace(0, 1, num_steps, device=noise.device):
-        t_batch = t_val.expand(xt.size(0))
-        v_cond = model(xt, t_batch, cond)
-        v_uncond = model(xt, t_batch, null_cond)
-        vt = v_uncond + guidance_scale * (v_cond - v_uncond)
-        xt = xt + vt * dt
-    return xt
+from ode_solvers import EulerSolver, LatentODESolver
 
 
 class FlowSampler:
@@ -53,6 +28,7 @@ class FlowSampler:
         latent_shape: Optional[list] = None,
         device: str = "cpu",
         checkpoint: Optional[str] = None,
+        solver: Optional[LatentODESolver] = None,
     ):
         self.device = torch.device(device)
         self.module = model.to(self.device)
@@ -66,6 +42,7 @@ class FlowSampler:
         self.module.eval()
         self.num_steps = num_steps
         self.latent_shape = latent_shape
+        self.solver = solver or EulerSolver()
 
     def sample_labels(self, n_samples: int, class_sampler=None) -> Optional[Tensor]:
         if class_sampler is not None:
@@ -78,6 +55,38 @@ class FlowSampler:
         return None
 
     @torch.no_grad()
+    def generate_impl(
+        self,
+        noise: Tensor,
+        labels: Optional[Tensor] = None,
+        guidance_scale: float = 1.0,
+    ) -> Tensor:
+        noise = noise.to(self.device)
+        labels = labels.to(self.device) if labels is not None else None
+        xt = noise
+        dt = 1.0 / self.num_steps
+        if labels is None:
+
+            def velocity_fn(x: Tensor, t: Tensor) -> Tensor:
+                return self.module(x, t.expand(x.size(0)))
+
+        else:
+
+            def velocity_fn(x: Tensor, t: Tensor) -> Tensor:
+                t_batch = t.expand(x.size(0))
+                if guidance_scale == 1.0:
+                    return self.module(x, t_batch, labels)
+                null_labels = torch.full_like(labels, self.module.null_token)
+                v_cond = self.module(x, t_batch, labels)
+                v_uncond = self.module(x, t_batch, null_labels)
+                return v_uncond + guidance_scale * (v_cond - v_uncond)
+
+        steps = torch.arange(self.num_steps, device=self.device, dtype=xt.dtype)
+        for t_val in steps / float(self.num_steps):
+            xt = self.solver.step(xt, t_val, dt, velocity_fn)
+        return xt
+
+    @torch.no_grad()
     def generate(
         self,
         n_samples: int,
@@ -86,20 +95,67 @@ class FlowSampler:
     ) -> Tensor:
         shape = tuple(self.latent_shape) if self.latent_shape else (2,)
         noise = torch.randn(n_samples, *shape, device=self.device)
+        guidance_scale = 1.0
         if class_sampler is not None:
             labels = (
                 labels
                 if labels is not None
                 else self.sample_labels(n_samples, class_sampler)
             )
-            return guided_euler_sample(
-                self.module,
-                noise,
-                self.num_steps,
-                labels,
-                class_sampler.guidance_scale,
-            )
-        return euler_sample(self.module, noise, self.num_steps)
+            guidance_scale = class_sampler.guidance_scale
+        return self.generate_impl(noise, labels=labels, guidance_scale=guidance_scale)
+
+
+@torch.no_grad()
+def ode_sample(model, noise, num_steps, solver: Optional[LatentODESolver] = None):
+    """Generate samples by integrating the learned velocity field."""
+    sampler = FlowSampler(
+        model,
+        num_steps=num_steps,
+        latent_shape=list(noise.shape[1:]),
+        device=str(noise.device),
+        solver=solver,
+    )
+    return sampler.generate_impl(noise)
+
+
+@torch.no_grad()
+def guided_ode_sample(
+    model,
+    noise,
+    num_steps,
+    cond,
+    guidance_scale,
+    solver: Optional[LatentODESolver] = None,
+):
+    """ODE sampling with classifier-free guidance."""
+    sampler = FlowSampler(
+        model,
+        num_steps=num_steps,
+        latent_shape=list(noise.shape[1:]),
+        device=str(noise.device),
+        solver=solver,
+    )
+    return sampler.generate_impl(noise, labels=cond, guidance_scale=guidance_scale)
+
+
+@torch.no_grad()
+def euler_sample(model, noise, num_steps):
+    """Generate samples via Euler integration of the learned velocity field."""
+    return ode_sample(model, noise, num_steps, EulerSolver())
+
+
+@torch.no_grad()
+def guided_euler_sample(model, noise, num_steps, cond, guidance_scale):
+    """Euler sampling with classifier-free guidance."""
+    return guided_ode_sample(
+        model,
+        noise,
+        num_steps,
+        cond,
+        guidance_scale,
+        EulerSolver(),
+    )
 
 
 def run_inference(
@@ -138,7 +194,8 @@ def run_inference(
         print(f"Wrote metrics → {metrics_path}", flush=True)
 
     if icfg.save_path:
-        title = f"{sampler.num_steps} Euler steps, {icfg.n_samples} samples"
+        solver_name = getattr(sampler.solver, "name", type(sampler.solver).__name__)
+        title = f"{sampler.num_steps} {solver_name} steps, {icfg.n_samples} samples"
         if sampler.latent_shape is None:
             real = train_data.data if train_data is not None else None
             if real is not None:

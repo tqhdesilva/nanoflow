@@ -14,13 +14,13 @@ from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf
 from PIL import Image
 
+from ode_solvers import EulerSolver, HeunSolver
 from eval_imagenet import (
     CheckpointInfo,
     GenerationConfig,
     build_uniform_labels,
     cleanfid_stats_path,
     compute_imagenet_fid,
-    endpoint_excluded_euler_grid,
     generate_imagenet_samples,
     generate_latents,
     load_checkpoint_weights,
@@ -68,13 +68,6 @@ class EvalImageNetTest(unittest.TestCase):
         labels_50k = build_uniform_labels(50000, 1000)
         expected = torch.full((1000,), 50, dtype=torch.long)
         self.assertTrue(torch.equal(torch.bincount(labels_50k), expected))
-
-    def test_endpoint_excluded_grid_does_not_include_one(self):
-        grid = endpoint_excluded_euler_grid(4, device=torch.device("cpu"))
-        torch.testing.assert_close(grid, torch.tensor([0.0, 0.25, 0.5, 0.75]))
-        self.assertLess(float(grid[-1]), 1.0)
-        with self.assertRaises(TypeError):
-            endpoint_excluded_euler_grid(cast(Any, 1.5), device=torch.device("cpu"))
 
     def test_sample_generation_writes_pngs_labels_and_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -160,7 +153,7 @@ class EvalImageNetTest(unittest.TestCase):
             guidance_scale=1.0,
             seed=seed,
             device=torch.device("cpu"),
-            solver="euler",
+            solver=EulerSolver(),
         )
         heun = generate_latents(
             LinearVelocityModel(),
@@ -171,7 +164,7 @@ class EvalImageNetTest(unittest.TestCase):
             guidance_scale=1.0,
             seed=seed,
             device=torch.device("cpu"),
-            solver="heun",
+            solver=HeunSolver(),
         )
         gen = torch.Generator(device="cpu")
         gen.manual_seed(seed)
@@ -195,7 +188,7 @@ class EvalImageNetTest(unittest.TestCase):
                 seed=9,
                 num_classes=4,
                 image_size=256,
-                solver="heun",
+                solver=HeunSolver(),
                 grid_path=grid_path,
                 grid_nrow=4,
             )
@@ -273,23 +266,6 @@ class EvalImageNetTest(unittest.TestCase):
                     DummyCFGModel(),
                     DummyVAE(),
                     wrong_metadata_cfg,
-                    device=torch.device("cpu"),
-                )
-
-        with tempfile.TemporaryDirectory() as tmp:
-            bad_solver_cfg = GenerationConfig(
-                output_dir=Path(tmp) / "eval",
-                checkpoint="dummy.pt",
-                num_samples=1,
-                batch_size=1,
-                num_steps=1,
-                solver=cast(Any, "bogus"),
-            )
-            with self.assertRaisesRegex(ValueError, "solver"):
-                generate_imagenet_samples(
-                    DummyCFGModel(),
-                    DummyVAE(),
-                    bad_solver_cfg,
                     device=torch.device("cpu"),
                 )
 
@@ -410,20 +386,23 @@ class EvalImageNetTest(unittest.TestCase):
                 cfg_with_grid = compose(
                     config_name="eval_imagenet",
                     overrides=[
-                        "eval.generation.solver=heun",
+                        "solver@eval.generation.solver=heun",
                         "eval.generation.grid_path=grid.png",
                     ],
                 )
-                self.assertEqual(cfg_with_grid.eval.generation.solver, "heun")
+                self.assertEqual(
+                    cfg_with_grid.eval.generation.solver._target_,
+                    "ode_solvers.HeunSolver",
+                )
                 self.assertEqual(cfg_with_grid.eval.generation.grid_path, "grid.png")
                 runtime_cfg = _generation_config_from_hydra(
                     OmegaConf.merge(cfg_with_grid.eval, {"output_dir": "/tmp/eval"})
                 )
-                self.assertEqual(runtime_cfg.solver, "heun")
+                self.assertIsInstance(runtime_cfg.solver, HeunSolver)
                 with self.assertRaises(Exception):
                     compose(
                         config_name="eval_imagenet",
-                        overrides=["eval.generation.solver=bogus"],
+                        overrides=["solver@eval.generation.solver=bogus"],
                     )
                 with self.assertRaises(Exception):
                     compose(

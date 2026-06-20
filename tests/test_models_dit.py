@@ -5,6 +5,7 @@ import torch
 
 import config as _config  # noqa: F401
 from config import LossMode
+from ode_solvers import HeunSolver
 from models_dit import (
     ClassCondDeferredMaskingDiT,
     ClassCondDiT,
@@ -769,6 +770,19 @@ class DiTModelTest(unittest.TestCase):
         self.assertEqual(cfg.model.num_classes, cfg.dataset.num_classes)
         self.assertEqual(cfg.model.num_classes, cfg.inference.class_sampler.num_classes)
         self.assertIsNotNone(cfg.training.p_uncond)
+
+        GlobalHydra.instance().clear()
+        with initialize_config_dir(config_dir=config_dir, version_base=None):
+            heun_cfg = compose(
+                config_name="config",
+                overrides=[
+                    "experiment=imagenet256_latent_dit_smoke",
+                    "+solver@sample_logger.solver=heun",
+                    "solver@inference.sampler.solver=heun",
+                ],
+            )
+        self.assertIsInstance(instantiate(heun_cfg.sample_logger.solver), HeunSolver)
+        self.assertIsInstance(instantiate(heun_cfg.inference.sampler.solver), HeunSolver)
 
     def test_hydra_deferred_masking_smoke_config_materializes(self):
         from hydra import compose, initialize_config_dir

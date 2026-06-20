@@ -3,6 +3,7 @@ defaults:
   - model: classcond_deferred_dit_imagenet256_latent_tiny
   - vae: sd_vae_ft_ema
   - eval: imagenet_schema
+  - solver@eval.generation.solver: euler
   - _self_
   - optional experiment: null
 
@@ -25,7 +26,6 @@ eval:
     batch_size: 16
     num_steps: 200
     guidance_scale: 2.0
-    solver: euler
     grid_path: null
     grid_nrow: 8
     latent_shape: [4, 32, 32]
