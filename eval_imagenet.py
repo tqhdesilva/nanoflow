@@ -899,6 +899,11 @@ def _cfg_get(cfg: Any, key: str, default: Any = None) -> Any:
     return OmegaConf.select(cfg, key, default=default)
 
 
+def _cfg_value(cfg: Any, key: str, default: Any = None) -> Any:
+    value = _cfg_get(cfg, key, default)
+    return value.value if hasattr(value, "value") else value
+
+
 def _generation_config_from_hydra(eval_cfg: Any) -> GenerationConfig:
     """Convert the structured Hydra eval node to `GenerationConfig`."""
     output_dir = _cfg_get(eval_cfg, "output_dir")
@@ -911,7 +916,7 @@ def _generation_config_from_hydra(eval_cfg: Any) -> GenerationConfig:
         batch_size=int(_cfg_get(eval_cfg, "generation.batch_size", 16)),
         num_steps=int(_cfg_get(eval_cfg, "generation.num_steps", 200)),
         guidance_scale=float(_cfg_get(eval_cfg, "generation.guidance_scale", 2.0)),
-        solver=str(_cfg_get(eval_cfg, "generation.solver", "euler")),
+        solver=str(_cfg_value(eval_cfg, "generation.solver", "euler")),
         grid_path=(
             None
             if _cfg_get(eval_cfg, "generation.grid_path") is None

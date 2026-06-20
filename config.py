@@ -350,6 +350,11 @@ class InferenceConfig:
     metrics: Optional[list] = None
 
 
+class ODESolver(str, Enum):
+    euler = "euler"
+    heun = "heun"
+
+
 @dataclass
 class ImageNetEvalGenerationConfig:
     """Batched PNG sample generation settings for ImageNet eval."""
@@ -358,7 +363,7 @@ class ImageNetEvalGenerationConfig:
     batch_size: int = 16
     num_steps: int = 200
     guidance_scale: float = 2.0
-    solver: str = "euler"
+    solver: ODESolver = ODESolver.euler
     grid_path: Optional[str] = None
     grid_nrow: int = 8
     latent_shape: list[int] = field(default_factory=lambda: [4, 32, 32])

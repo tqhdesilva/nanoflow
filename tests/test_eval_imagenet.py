@@ -11,6 +11,7 @@ import torch
 import yaml
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
+from omegaconf import OmegaConf
 from PIL import Image
 
 from eval_imagenet import (
@@ -25,6 +26,7 @@ from eval_imagenet import (
     load_checkpoint_weights,
     make_custom_fid_stats,
     sha256_file,
+    _generation_config_from_hydra,
 )
 
 
@@ -414,6 +416,15 @@ class EvalImageNetTest(unittest.TestCase):
                 )
                 self.assertEqual(cfg_with_grid.eval.generation.solver, "heun")
                 self.assertEqual(cfg_with_grid.eval.generation.grid_path, "grid.png")
+                runtime_cfg = _generation_config_from_hydra(
+                    OmegaConf.merge(cfg_with_grid.eval, {"output_dir": "/tmp/eval"})
+                )
+                self.assertEqual(runtime_cfg.solver, "heun")
+                with self.assertRaises(Exception):
+                    compose(
+                        config_name="eval_imagenet",
+                        overrides=["eval.generation.solver=bogus"],
+                    )
                 with self.assertRaises(Exception):
                     compose(
                         config_name="eval_imagenet",
