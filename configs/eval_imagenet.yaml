@@ -25,6 +25,9 @@ eval:
     batch_size: 16
     num_steps: 200
     guidance_scale: 2.0
+    solver: euler
+    grid_path: null
+    grid_nrow: 8
     latent_shape: [4, 32, 32]
     num_classes: 1000
     image_size: 256

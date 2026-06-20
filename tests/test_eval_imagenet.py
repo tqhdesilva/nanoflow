@@ -21,6 +21,7 @@ from eval_imagenet import (
     compute_imagenet_fid,
     endpoint_excluded_euler_grid,
     generate_imagenet_samples,
+    generate_latents,
     load_checkpoint_weights,
     make_custom_fid_stats,
     sha256_file,
@@ -44,6 +45,15 @@ class DummyVAE:
     def decode(self, z):
         values = z.float().mean(dim=(1, 2, 3)).tanh().view(z.size(0), 1, 1, 1)
         return values.expand(z.size(0), 3, 256, 256)
+
+
+class LinearVelocityModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.anchor = torch.nn.Parameter(torch.zeros(()))
+
+    def forward(self, x, t, labels=None):
+        return x + self.anchor * 0
 
 
 class EvalImageNetTest(unittest.TestCase):
@@ -135,6 +145,84 @@ class EvalImageNetTest(unittest.TestCase):
                     device=torch.device("cpu"),
                 )
 
+    def test_heun_solver_uses_predictor_corrector(self):
+        labels = torch.tensor([0])
+        latent_shape = (1,)
+        seed = 13
+        euler = generate_latents(
+            LinearVelocityModel(),
+            [0],
+            labels,
+            latent_shape=latent_shape,
+            num_steps=1,
+            guidance_scale=1.0,
+            seed=seed,
+            device=torch.device("cpu"),
+            solver="euler",
+        )
+        heun = generate_latents(
+            LinearVelocityModel(),
+            [0],
+            labels,
+            latent_shape=latent_shape,
+            num_steps=1,
+            guidance_scale=1.0,
+            seed=seed,
+            device=torch.device("cpu"),
+            solver="heun",
+        )
+        gen = torch.Generator(device="cpu")
+        gen.manual_seed(seed)
+        noise = torch.randn(*latent_shape, generator=gen).view(1, *latent_shape)
+
+        torch.testing.assert_close(euler, noise * 2.0)
+        torch.testing.assert_close(heun, noise * 2.5)
+
+    def test_sample_generation_writes_grid_and_resumes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "eval"
+            grid_path = output_dir / "grid.png"
+            cfg = GenerationConfig(
+                output_dir=output_dir,
+                checkpoint="dummy.pt",
+                num_samples=8,
+                batch_size=4,
+                num_steps=2,
+                guidance_scale=2.0,
+                latent_shape=(4, 4, 4),
+                seed=9,
+                num_classes=4,
+                image_size=256,
+                solver="heun",
+                grid_path=grid_path,
+                grid_nrow=4,
+            )
+
+            metadata = generate_imagenet_samples(
+                DummyCFGModel(),
+                DummyVAE(),
+                cfg,
+                checkpoint_info=CheckpointInfo("dummy.pt", "raw", 7),
+                device=torch.device("cpu"),
+            )
+
+            self.assertEqual(metadata["sampler"]["type"], "ode_heun")
+            self.assertEqual(metadata["sampler"]["num_steps"], 2)
+            self.assertEqual(metadata["grid"]["nrow"], 4)
+            sample_pngs = sorted(output_dir.glob("[0-9][0-9][0-9][0-9][0-9][0-9].png"))
+            self.assertEqual(len(sample_pngs), 8)
+            with Image.open(grid_path) as img:
+                self.assertEqual(img.mode, "RGB")
+                self.assertEqual(img.size, (4 * 256, 2 * 256))
+
+            generate_imagenet_samples(
+                DummyCFGModel(),
+                DummyVAE(),
+                cfg,
+                checkpoint_info=CheckpointInfo("dummy.pt", "raw", 7),
+                device=torch.device("cpu"),
+            )
+
     def test_generation_config_validation_rejects_bad_values(self):
         with tempfile.TemporaryDirectory() as tmp:
             bad_batch_cfg = GenerationConfig(
@@ -183,6 +271,23 @@ class EvalImageNetTest(unittest.TestCase):
                     DummyCFGModel(),
                     DummyVAE(),
                     wrong_metadata_cfg,
+                    device=torch.device("cpu"),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_solver_cfg = GenerationConfig(
+                output_dir=Path(tmp) / "eval",
+                checkpoint="dummy.pt",
+                num_samples=1,
+                batch_size=1,
+                num_steps=1,
+                solver=cast(Any, "bogus"),
+            )
+            with self.assertRaisesRegex(ValueError, "solver"):
+                generate_imagenet_samples(
+                    DummyCFGModel(),
+                    DummyVAE(),
+                    bad_solver_cfg,
                     device=torch.device("cpu"),
                 )
 
@@ -300,6 +405,15 @@ class EvalImageNetTest(unittest.TestCase):
             with initialize_config_dir(config_dir=config_dir, version_base=None):
                 cfg = compose(config_name="eval_imagenet")
                 self.assertEqual(cfg.eval.generation.num_samples, 10000)
+                cfg_with_grid = compose(
+                    config_name="eval_imagenet",
+                    overrides=[
+                        "eval.generation.solver=heun",
+                        "eval.generation.grid_path=grid.png",
+                    ],
+                )
+                self.assertEqual(cfg_with_grid.eval.generation.solver, "heun")
+                self.assertEqual(cfg_with_grid.eval.generation.grid_path, "grid.png")
                 with self.assertRaises(Exception):
                     compose(
                         config_name="eval_imagenet",

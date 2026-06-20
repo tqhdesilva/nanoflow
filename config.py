@@ -358,6 +358,9 @@ class ImageNetEvalGenerationConfig:
     batch_size: int = 16
     num_steps: int = 200
     guidance_scale: float = 2.0
+    solver: str = "euler"
+    grid_path: Optional[str] = None
+    grid_nrow: int = 8
     latent_shape: list[int] = field(default_factory=lambda: [4, 32, 32])
     num_classes: int = 1000
     image_size: int = 256

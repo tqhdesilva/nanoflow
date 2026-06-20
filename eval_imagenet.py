@@ -41,8 +41,11 @@ class GenerationConfig:
         checkpoint: Checkpoint path used for the model weights.
         num_samples: Number of images to generate.
         batch_size: Max number of missing samples generated per model batch.
-        num_steps: Number of endpoint-excluded Euler steps.
+        num_steps: Number of endpoint-excluded ODE steps.
         guidance_scale: Classifier-free guidance scale.
+        solver: ODE solver name, either `euler` or `heun`.
+        grid_path: Optional output path for a PNG image grid.
+        grid_nrow: Number of images per grid row when `grid_path` is set.
         latent_shape: Latent noise shape, without the batch dimension.
         seed: Base seed. Sample index `i` uses seed `seed + i`.
         num_classes: Number of class labels to cycle over.
@@ -58,6 +61,9 @@ class GenerationConfig:
     batch_size: int = 16
     num_steps: int = 200
     guidance_scale: float = 2.0
+    solver: str = "euler"
+    grid_path: Optional[Path] = None
+    grid_nrow: int = 8
     latent_shape: tuple[int, ...] = (4, 32, 32)
     seed: int = 0
     num_classes: int = 1000
@@ -155,18 +161,20 @@ def generate_latents(
     guidance_scale: float,
     seed: int,
     device: torch.device,
+    solver: str = "euler",
 ) -> torch.Tensor:
-    """Generate a latent batch using endpoint-excluded Euler integration.
+    """Generate a latent batch using endpoint-excluded ODE integration.
 
     Args:
         model: Class-conditioned velocity model.
         indices: Global sample indices for deterministic per-sample noise.
         labels: Labels for the requested indices.
         latent_shape: Latent tensor shape without batch dimension.
-        num_steps: Number of Euler steps.
+        num_steps: Number of ODE steps.
         guidance_scale: Classifier-free guidance scale.
         seed: Base random seed.
         device: Device used for model evaluation.
+        solver: ODE solver name, either `euler` or `heun`.
 
     Returns:
         Generated latent tensor with shape `[len(indices), *latent_shape]`.
@@ -174,6 +182,7 @@ def generate_latents(
     if len(indices) == 0:
         raise ValueError("indices must not be empty")
     _require_positive_int("num_steps", num_steps)
+    solver = _normalize_solver(solver)
     if seed < 0:
         raise ValueError("seed must be nonnegative")
     model.eval()
@@ -187,7 +196,20 @@ def generate_latents(
     ):
         t_batch = t_val.expand(xt.size(0))
         vt = _guided_velocity(model, xt, t_batch, labels, guidance_scale)
-        xt = xt + vt * dt
+        if solver == "euler":
+            xt = xt + vt * dt
+            continue
+        x_predict = xt + vt * dt
+        next_t = torch.minimum(t_val + dt, torch.ones_like(t_val))
+        next_t_batch = next_t.expand(xt.size(0))
+        vt_next = _guided_velocity(
+            model,
+            x_predict,
+            next_t_batch,
+            labels,
+            guidance_scale,
+        )
+        xt = xt + 0.5 * (vt + vt_next) * dt
     return xt
 
 
@@ -242,6 +264,10 @@ def generate_imagenet_samples(
     _write_yaml(output_dir / "metadata.yaml", metadata)
 
     expected_names = {f"{idx:06d}.png" for idx in range(cfg.num_samples)}
+    if _grid_path_is_in_output_dir(cfg, output_dir) and cfg.grid_path is not None:
+        if cfg.grid_path.name in expected_names:
+            raise ValueError("grid_path must not overlap generated sample PNG names")
+        expected_names.add(cfg.grid_path.name)
     extra_pngs = [p for p in output_dir.glob("*.png") if p.name not in expected_names]
     if extra_pngs:
         names = ", ".join(sorted(p.name for p in extra_pngs[:5]))
@@ -272,6 +298,7 @@ def generate_imagenet_samples(
             guidance_scale=cfg.guidance_scale,
             seed=cfg.seed,
             device=device,
+            solver=cfg.solver,
         )
         images = vae.decode(latents).detach().cpu()
         _save_image_batch(
@@ -284,6 +311,8 @@ def generate_imagenet_samples(
     )
     metadata["complete"] = valid_count == cfg.num_samples
     metadata["num_valid_pngs"] = int(valid_count)
+    if valid_count == cfg.num_samples and cfg.grid_path is not None:
+        metadata["grid"] = _write_sample_grid(output_dir, cfg)
     metadata["completed_at"] = _utc_now()
     _write_yaml(output_dir / "metadata.yaml", metadata)
     if valid_count != cfg.num_samples:
@@ -575,6 +604,38 @@ def _sample_path(output_dir: Path, idx: int) -> Path:
     return output_dir / f"{idx:06d}.png"
 
 
+def _grid_path_is_in_output_dir(cfg: GenerationConfig, output_dir: Path) -> bool:
+    if cfg.grid_path is None:
+        return False
+    return cfg.grid_path.parent.resolve() == output_dir.resolve()
+
+
+def _write_sample_grid(output_dir: Path, cfg: GenerationConfig) -> dict[str, Any]:
+    if cfg.grid_path is None:
+        raise ValueError("grid_path is required to write a sample grid")
+    images: list[Image.Image] = []
+    for idx in range(cfg.num_samples):
+        with Image.open(_sample_path(output_dir, idx)) as img:
+            images.append(img.convert("RGB"))
+    if not images:
+        raise ValueError("Cannot write a grid with no images")
+    width, height = images[0].size
+    nrow = min(int(cfg.grid_nrow), len(images))
+    rows = (len(images) + nrow - 1) // nrow
+    grid = Image.new("RGB", (nrow * width, rows * height))
+    for idx, image in enumerate(images):
+        row = idx // nrow
+        col = idx % nrow
+        grid.paste(image, (col * width, row * height))
+    _save_png_atomic(grid, cfg.grid_path)
+    return {
+        "path": str(cfg.grid_path),
+        "nrow": int(cfg.grid_nrow),
+        "num_images": int(len(images)),
+        "size": [int(grid.width), int(grid.height)],
+    }
+
+
 def _write_labels(output_dir: Path, labels: torch.Tensor) -> Path:
     records = [
         {"index": int(idx), "filename": f"{idx:06d}.png", "label": int(label)}
@@ -609,7 +670,7 @@ def _build_generation_metadata(
         "checkpoint": asdict(checkpoint_info) if checkpoint_info is not None else None,
         "git": {"commit": _git_commit()},
         "sampler": {
-            "type": "ode_euler",
+            "type": f"ode_{cfg.solver}",
             "time_grid": "endpoint_excluded",
             "num_steps": int(cfg.num_steps),
             "dt": 1.0 / float(cfg.num_steps),
@@ -627,6 +688,7 @@ def _build_generation_metadata(
             "id": getattr(vae, "model_id", type(vae).__name__),
             "image_size": int(cfg.image_size),
         },
+        "grid": None,
         "image_format": "png_uint8_rgb",
     }
 
@@ -653,6 +715,8 @@ def _generation_critical_config(
         "num_samples": int(cfg.num_samples),
         "num_steps": int(cfg.num_steps),
         "guidance_scale": float(cfg.guidance_scale),
+        "solver": str(cfg.solver),
+        "grid_nrow": int(cfg.grid_nrow),
         "latent_shape": list(cfg.latent_shape),
         "seed": int(cfg.seed),
         "num_classes": int(cfg.num_classes),
@@ -660,7 +724,7 @@ def _generation_critical_config(
         "model_config": _jsonable(model_config),
         "vae_config": _jsonable(vae_config),
         "vae_id": getattr(vae, "model_id", type(vae).__name__),
-        "sampler": "endpoint_excluded_euler",
+        "sampler": f"endpoint_excluded_{cfg.solver}",
         "image_format": "png_uint8_rgb",
     }
 
@@ -733,6 +797,8 @@ def _validate_generation_config(cfg: GenerationConfig) -> None:
         raise ValueError("seed must be nonnegative")
     if cfg.weights not in {"auto", "ema", "raw"}:
         raise ValueError("weights must be one of: auto, ema, raw")
+    _normalize_solver(cfg.solver)
+    _require_positive_int("grid_nrow", cfg.grid_nrow)
     if not cfg.latent_shape:
         raise ValueError("latent_shape must not be empty")
     for dim in cfg.latent_shape:
@@ -744,6 +810,14 @@ def _require_positive_int(name: str, value: int) -> None:
         raise TypeError(f"{name} must be an integer, got {type(value).__name__}")
     if value <= 0:
         raise ValueError(f"{name} must be positive, got {value}")
+
+
+def _normalize_solver(solver: str) -> str:
+    if not isinstance(solver, str):
+        raise TypeError(f"solver must be a string, got {type(solver).__name__}")
+    if solver not in {"euler", "heun"}:
+        raise ValueError("solver must be one of: euler, heun")
+    return solver
 
 
 def _module_device(module: torch.nn.Module) -> torch.device:
@@ -837,6 +911,13 @@ def _generation_config_from_hydra(eval_cfg: Any) -> GenerationConfig:
         batch_size=int(_cfg_get(eval_cfg, "generation.batch_size", 16)),
         num_steps=int(_cfg_get(eval_cfg, "generation.num_steps", 200)),
         guidance_scale=float(_cfg_get(eval_cfg, "generation.guidance_scale", 2.0)),
+        solver=str(_cfg_get(eval_cfg, "generation.solver", "euler")),
+        grid_path=(
+            None
+            if _cfg_get(eval_cfg, "generation.grid_path") is None
+            else Path(_cfg_get(eval_cfg, "generation.grid_path"))
+        ),
+        grid_nrow=int(_cfg_get(eval_cfg, "generation.grid_nrow", 8)),
         latent_shape=tuple(_cfg_get(eval_cfg, "generation.latent_shape", [4, 32, 32])),
         seed=int(_cfg_get(eval_cfg, "seed", 0)),
         num_classes=int(_cfg_get(eval_cfg, "generation.num_classes", 1000)),
