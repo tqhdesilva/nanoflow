@@ -1,0 +1,120 @@
+name: nf-imagenet256-dit-h1024d20-masked-resume-to300-${CHAIN_ID}
+execution: serial
+
+---
+name: verify_resume_inputs
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  cpus: 1+
+  memory: 4+
+  disk_size: 5
+  image_id: ${SYNC_IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+file_mounts:
+  /tmp/nanoflow-rendered-chain.yaml: ${RENDERED_CHAIN_PATH}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  RESUME_RUN_ID: h1024d20-masked80to200-b320-usca2-20260621-193511
+  RUNPOD_INFRA: ${RUNPOD_INFRA}
+  GPU_REQUEST: ${GPU_REQUEST}
+  VOLUME_NAME: ${VOLUME_NAME}
+  VOLUME_SIZE: ${VOLUME_SIZE}
+  IMAGE_ID: ${IMAGE_ID}
+  SYNC_IMAGE_ID: ${SYNC_IMAGE_ID}
+  DATASET_CLOUD_URI: ${DATASET_CLOUD_URI}
+  DATASET_GCS_URI: ${DATASET_CLOUD_URI}
+  DATASET_CACHE_ROOT: /workspace/latent-caches/imagenet256/current
+  LATENT_CACHE_LINK: /workspace/latent-caches/imagenet256/current
+  ARTIFACT_CLOUD_URI: ${ARTIFACT_CLOUD_URI}
+  INSTALL_GCLOUD: "1"
+  LOAD_ENV_FILE: "0"
+  SKIP_SYNC_IF_PRESENT: "1"
+run: |
+  set -euo pipefail
+  mkdir -p "/workspace/runs/$RESUME_RUN_ID"
+  cp /tmp/nanoflow-rendered-chain.yaml "/workspace/runs/$RESUME_RUN_ID/resume_to300_chain_$CHAIN_ID.yaml"
+  bash scripts/runpod_hydrate_imagenet_latents.sh
+  python scripts/preflight_imagenet_latent_mmap.py \
+    --cache-root /workspace/latent-caches/imagenet256/current \
+    --batch-size 8 \
+    --num-workers 2
+
+  resume_ckpt="/workspace/runs/$RESUME_RUN_ID/masked_pretrain_80_to_200/checkpoints/latest.pt"
+  test -s "$resume_ckpt"
+
+---
+name: masked_pretrain_resume_to_300
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  accelerators: ${GPU_REQUEST}
+  disk_size: 100
+  image_id: ${IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+file_mounts:
+  /tmp/nanoflow-rendered-chain.yaml: ${RENDERED_CHAIN_PATH}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  RESUME_RUN_ID: h1024d20-masked80to200-b320-usca2-20260621-193511
+  DATASET_CACHE_ROOT: /workspace/latent-caches/imagenet256/current
+  LATENT_CACHE_LINK: /workspace/latent-caches/imagenet256/current
+  RUNS_DIR: /workspace/runs
+  HF_HOME: /workspace/.cache/huggingface
+  TORCH_HOME: /workspace/.cache/torch
+  TMPDIR: /workspace/.tmp
+  HYDRA_FULL_ERROR: "1"
+run: |
+  set -euo pipefail
+  stage_dir="/workspace/runs/$RESUME_RUN_ID/masked_pretrain_80_to_200"
+  resume_ckpt="$stage_dir/checkpoints/latest.pt"
+  mkdir -p "$HF_HOME" "$TORCH_HOME" "$TMPDIR" "$RUNS_DIR" "$stage_dir"
+  cp /tmp/nanoflow-rendered-chain.yaml "$stage_dir/resume_to300_chain_$CHAIN_ID.yaml"
+  test -s "$resume_ckpt"
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi | tee "$stage_dir/nvidia-smi_resume_to300_$CHAIN_ID.txt"
+  fi
+  python train.py \
+    experiment=imagenet256_latent_dit_m2_moe_layerwise_h1024_d20_e16_c2_moew05_masked80 \
+    device=cuda \
+    dataset.cache_root=/workspace/latent-caches/imagenet256/current \
+    runs_dir=/workspace/runs \
+    "training.run_dir=$stage_dir" \
+    "training.resume=$resume_ckpt" \
+    training.run_prefix=imagenet256_latent_dit_m2_moe_layerwise_h1024_d20_e16_c2_moew05_masked80_to_300 \
+    training.epochs=220 \
+    training.lr=5.25e-5 \
+    training.lr_min_factor=1.0 \
+    training.lr_schedule_epochs=220 \
+    training.warmup_epochs=1 \
+    training.checkpoint_every=5 \
+    train_loader.persistent_workers=true \
+    val_loader.persistent_workers=true \
+    train_loader.prefetch_factor=4 \
+    val_loader.prefetch_factor=4 \
+    inference=null \
+    2>&1 | tee -a "$stage_dir/train_console.log"
+
+---
+name: sync_artifacts
+workdir: .
+resources:
+  infra: ${RUNPOD_INFRA}
+  cpus: 1+
+  memory: 4+
+  disk_size: 5
+  image_id: ${SYNC_IMAGE_ID}
+volumes:
+  /workspace: ${VOLUME_NAME}
+envs:
+  CHAIN_ID: ${CHAIN_ID}
+  RESUME_RUN_ID: h1024d20-masked80to200-b320-usca2-20260621-193511
+  ARTIFACT_CLOUD_URI: ${ARTIFACT_CLOUD_URI}
+  INSTALL_GCLOUD: "1"
+run: |
+  set -euo pipefail
+  bash scripts/runpod_gcs_rsync.sh \
+    "/workspace/runs/$RESUME_RUN_ID" \
+    "$ARTIFACT_CLOUD_URI/$RESUME_RUN_ID"
