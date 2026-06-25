@@ -22,23 +22,25 @@ uv run python train.py experiment=cifar10 device=cuda training.epochs=200 traini
 ```
 
 Multi-GPU:
+
 ```bash
 torchrun --nproc_per_node=N train.py experiment=cifar10 device=cuda distributed=ddp
 ```
 
 ## Experiments
 
-| Experiment | Dataset | Model | Params | Notes |
-|------------|---------|-------|--------|-------|
-| `moons` (default) | 2D moons | MLP | ~71K | ~10s on MPS |
-| `fashion` | FashionMNIST 28x28 | UNet (depth=2) | ~347K | ~10 min on MPS |
-| `cifar10` | CIFAR-10 32x32 | UNet (depth=3, attn) | ~5.8M | ~17 min on RTX 4080 (16GB) |
+| Experiment        | Dataset            | Model                | Params | Notes                      |
+| ----------------- | ------------------ | -------------------- | ------ | -------------------------- |
+| `moons` (default) | 2D moons           | MLP                  | ~71K   | ~10s on MPS                |
+| `fashion`         | FashionMNIST 28x28 | UNet (depth=2)       | ~347K  | ~10 min on MPS             |
+| `cifar10`         | CIFAR-10 32x32     | UNet (depth=3, attn) | ~5.8M  | ~17 min on RTX 4080 (16GB) |
 
 ## Config system
 
 Configs use [Hydra](https://hydra.cc/) with structured config validation. The experiment config is the main knob; it sets dataset, model, and inference defaults together.
 
 Sanity-check the fully materialized config before a run:
+
 ```bash
 uv run python train.py experiment=cifar10 device=cuda --cfg job
 ```
@@ -51,6 +53,7 @@ configs/
 ```
 
 Key overrides:
+
 - `device={cpu,mps,cuda}`: default: cpu
 - `training.epochs=N`, `training.lr=X`, `training.batch_size=N`
 - `inference.save_path=path.png`: write a sample-grid plot
@@ -79,11 +82,13 @@ for every prompt, which is useful for checking whether GRPO can move the policy
 when the seed model is already prompt-aligned.
 
 Sanity-check the resolved config before a run:
+
 ```bash
 uv run python train_grpo.py --cfg job
 ```
 
 Common overrides:
+
 - `rl_training.G=N`: group size (rollout batch = `batch_size * G`)
 - `rl_training.num_inner=N`: PPO-style inner loop count
 - `rl_training.kl_beta=X`, `rl_training.clip_eps=X`
@@ -118,19 +123,10 @@ This reads and writes `/workspace/runs/imagenet256_latent_cfg/checkpoints/latest
 
 ## Flow matching in brief
 
-| Concept | Detail |
-|---------|--------|
-| Interpolation | `x_t = (1-t)*noise + t*data` |
-| Target | Predict velocity `v = data - noise` |
-| Time | `t ∈ [0,1]`, continuous (t=0 is noise, t=1 is data) |
-| Sampling | Deterministic Euler ODE: `x += v*dt` |
-| Loss | MSE on predicted vs target velocity |
-
-## DDPM vs Flow Matching
-
-| DDPM | Flow Matching |
-|------|---------------|
-| `x_t = sqrt(a_t)*x_0 + sqrt(1-a_t)*eps` | `x_t = (1-t)*eps + t*x_0` |
-| Predict noise `eps` | Predict velocity `v = x_0 - eps` |
-| Integer timesteps, beta schedule | Continuous `t ∈ [0,1]`, no schedule |
-| Stochastic reverse chain | Deterministic Euler ODE |
+| Concept       | Detail                                              |
+| ------------- | --------------------------------------------------- |
+| Interpolation | `x_t = (1-t)*noise + t*data` (CondOT)               |
+| Target        | Predict velocity `v = data - noise`                 |
+| Time          | `t ∈ [0,1]`, continuous (t=0 is noise, t=1 is data) |
+| Sampling      | Deterministic Euler ODE: `x += v*dt`                |
+| Loss          | MSE on predicted vs target velocity                 |
